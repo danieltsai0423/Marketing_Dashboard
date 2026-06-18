@@ -651,7 +651,7 @@ def render_history_tab():
 
     with st.container(border=True):
         st.markdown(
-            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #EC4899;">關鍵字觀看趨勢</h3>',
+            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #1A1A1A;">關鍵字觀看趨勢</h3>',
             unsafe_allow_html=True
         )
         hist_df = db_service.get_history(days=history_days)
@@ -668,22 +668,27 @@ def render_history_tab():
             fig = px.line(
                 agg, x="fetched_at", y="view_count", color="keyword",
                 labels={"fetched_at": "日期", "view_count": "總觀看數", "keyword": "關鍵字"},
-                color_discrete_sequence=["#EC4899", "#2563EB", "#8B5CF6", "#10B981", "#F59E0B"],
+                color_discrete_sequence=["#C5A880", "#2563EB", "#8B5CF6", "#10B981", "#F59E0B"],
+                markers=True,
             )
+            fig.update_traces(marker_size=8, line_width=2)
             fig.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="rgba(30,41,59,0.4)",
+                template="plotly_white",
+                paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font={"family": "Figtree, Noto Sans, sans-serif"},
+                font={"family": "Inter, sans-serif", "color": "#1A1A1A", "size": 13},
                 margin={"t": 20, "b": 30, "l": 40, "r": 20},
+                xaxis={"gridcolor": "#EBEBEB", "linecolor": "#EBEBEB", "tickcolor": "#6B7280"},
+                yaxis={"gridcolor": "#EBEBEB", "linecolor": "#EBEBEB", "tickcolor": "#6B7280"},
+                legend={"font": {"color": "#1A1A1A"}},
             )
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"共 {len(hist_df)} 筆歷史紀錄")
+            st.caption(f"共 {len(hist_df)} 筆歷史紀錄（{agg['fetched_at'].nunique()} 個日期）")
 
     st.write("")
     with st.container(border=True):
         st.markdown(
-            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #EC4899;">歷史報告</h3>',
+            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #1A1A1A;">歷史報告</h3>',
             unsafe_allow_html=True
         )
         reports = db_service.get_reports(limit=20)
