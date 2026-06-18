@@ -17,3 +17,6 @@ apscheduler>=3.10
 
 # Env vars
 python-dotenv>=1.0
+
+# Supabase knowledge base
+supabase>=2.0

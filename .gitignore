@@ -18,3 +18,7 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# 知識庫本地資料
+data/
+reports/

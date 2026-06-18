@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 
 import pandas as pd
 from openai import OpenAI
@@ -133,18 +134,23 @@ def generate_report(
     model: str | None = None,
     extra_instruction: str | None = None,
     api_key: str | None = None,
-) -> str:
-    """一次產生完整 Markdown 報告。"""
+) -> tuple[str, str]:
+    """一次產生完整 Markdown 報告。
+
+    Returns:
+        (report_content, run_id) — 報告內文與本次執行 UUID。
+    """
     client = _get_client(api_key)
     model = model or os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
     messages = _build_messages(df, extra_instruction)
-    logger.info("呼叫 LLM（model=%s）產生報告...", model)
+    run_id = str(uuid.uuid4())
+    logger.info("呼叫 LLM（model=%s, run_id=%s）產生報告...", model, run_id)
     try:
         resp = client.chat.completions.create(model=model, messages=messages)
-    except Exception as exc:  # openai 各種錯誤統一包裝
+    except Exception as exc:
         logger.error("LLM 呼叫失敗：%s", exc)
         raise LLMAgentError(str(exc)) from exc
-    return resp.choices[0].message.content or ""
+    return resp.choices[0].message.content or "", run_id
 
 
 def stream_report(

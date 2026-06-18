@@ -27,6 +27,7 @@ except ImportError:
 from youtube_service import fetch_shorts, YouTubeServiceError
 from llm_agent import stream_report, generate_report, LLMAgentError
 from line_service import push_report, LineServiceError
+import db_service
 
 KEYWORDS_CSV = "keywords.csv"
 WEEKDAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
@@ -379,6 +380,10 @@ def render_scraper_tab():
                 st.warning("未找到符合目前條件的數據。")
             else:
                 st.success(f"數據抓取完成！共取得 {len(df)} 筆紀錄。")
+                import uuid as _uuid
+                run_id = str(_uuid.uuid4())
+                st.session_state["run_id"] = run_id
+                db_service.upsert_shorts(df, run_id)
 
     if not kw_df.empty:
         st.write("")
@@ -499,6 +504,10 @@ def render_report_tab():
                 st.error(f"報告生成失敗：{e}")
                 return
             st.session_state["report"] = acc
+            run_id = st.session_state.get("run_id", "manual")
+            model = os.getenv("OPENROUTER_MODEL", "unknown")
+            keywords = df["keyword"].unique().tolist() if "keyword" in df.columns else []
+            db_service.save_report(run_id, keywords, model, acc)
 
     report = st.session_state.get("report")
     if report:
@@ -596,6 +605,72 @@ def render_automation_tab():
 
 
 # ---------------------------------------------------------------------------
+# 區塊 E：歷史知識庫
+# ---------------------------------------------------------------------------
+def render_history_tab():
+    st.markdown(
+        '<h2 style="font-size: 1.8rem; font-weight: 700; margin-bottom: 20px;">📚 歷史知識庫</h2>',
+        unsafe_allow_html=True
+    )
+
+    if not db_service.is_configured():
+        st.warning("尚未設定 Supabase（SUPABASE_URL / SUPABASE_KEY），歷史功能不可用。")
+        return
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        history_days = st.slider("查詢近幾天", 1, 90, 30)
+
+    with st.container(border=True):
+        st.markdown(
+            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #EC4899;">關鍵字觀看趨勢</h3>',
+            unsafe_allow_html=True
+        )
+        hist_df = db_service.get_history(days=history_days)
+        if hist_df.empty:
+            st.info("目前尚無歷史資料，請先執行抓取。")
+        else:
+            agg = (
+                hist_df.groupby(["fetched_at", "keyword"])["view_count"]
+                .sum()
+                .reset_index()
+            )
+            agg["fetched_at"] = agg["fetched_at"].dt.date
+            agg = agg.groupby(["fetched_at", "keyword"])["view_count"].sum().reset_index()
+            fig = px.line(
+                agg, x="fetched_at", y="view_count", color="keyword",
+                labels={"fetched_at": "日期", "view_count": "總觀看數", "keyword": "關鍵字"},
+                color_discrete_sequence=["#EC4899", "#2563EB", "#8B5CF6", "#10B981", "#F59E0B"],
+            )
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="rgba(30,41,59,0.4)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font={"family": "Figtree, Noto Sans, sans-serif"},
+                margin={"t": 20, "b": 30, "l": 40, "r": 20},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"共 {len(hist_df)} 筆歷史紀錄")
+
+    st.write("")
+    with st.container(border=True):
+        st.markdown(
+            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #EC4899;">歷史報告</h3>',
+            unsafe_allow_html=True
+        )
+        reports = db_service.get_reports(limit=20)
+        if not reports:
+            st.info("尚無報告記錄。")
+        else:
+            for r in reports:
+                ts = r.get("generated_at", "")[:16].replace("T", " ")
+                kw = r.get("keywords", "")
+                label = f"{ts}　{kw}"
+                with st.expander(label):
+                    st.markdown(r.get("content", ""))
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def main():
@@ -617,8 +692,8 @@ def main():
     
     render_sidebar()
 
-    tab1, tab2, tab3 = st.tabs(
-        ["市場情報採集", "AI 深度洞察", "自動化排程"]
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["市場情報採集", "AI 深度洞察", "自動化排程", "歷史知識庫"]
     )
     with tab1:
         render_scraper_tab()
@@ -626,6 +701,8 @@ def main():
         render_report_tab()
     with tab3:
         render_automation_tab()
+    with tab4:
+        render_history_tab()
 
 
 if __name__ == "__main__":
