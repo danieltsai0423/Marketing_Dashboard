@@ -79,9 +79,9 @@ def inject_custom_css():
             background-color: var(--color-surface) !important;
             border: 1px solid var(--color-border) !important;
             border-radius: 2px !important;
-            padding: 2rem !important;
+            padding: 1.5rem !important;
             box-shadow: 0 1px 3px rgba(0,0,0,0.02) !important;
-            margin-bottom: 1.5rem !important;
+            margin-bottom: 1.25rem !important;
             transition: box-shadow 0.3s ease !important;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:hover {
@@ -92,18 +92,21 @@ def inject_custom_css():
         div[data-testid="stTabBar"] {
             background-color: transparent !important;
             border-bottom: 1px solid var(--color-border) !important;
-            gap: 32px !important;
+            gap: 16px !important;
             padding-bottom: 4px !important;
+            overflow-x: auto !important;
+            flex-wrap: nowrap !important;
         }
         button[data-testid="stTabBar-trigger"] {
             font-family: 'Inter', sans-serif !important;
-            font-size: 0.9rem !important;
+            font-size: 0.82rem !important;
             font-weight: 500 !important;
-            letter-spacing: 0.05em !important;
+            letter-spacing: 0.03em !important;
             color: var(--color-text-muted) !important;
             border: none !important;
             background: none !important;
             padding: 8px 4px !important;
+            white-space: nowrap !important;
             transition: color 0.3s ease !important;
         }
         button[data-testid="stTabBar-trigger"]:hover {
@@ -125,7 +128,9 @@ def inject_custom_css():
             font-weight: 500 !important;
             letter-spacing: 0.05em !important;
             font-size: 0.85rem !important;
-            padding: 0.6rem 1.5rem !important;
+            padding: 0.65rem 1.25rem !important;
+            min-height: 44px !important;
+            width: 100% !important;
             transition: all 0.3s ease !important;
         }
         button[data-testid="baseButton-primary"]:hover {
@@ -143,7 +148,9 @@ def inject_custom_css():
             font-weight: 500 !important;
             letter-spacing: 0.05em !important;
             font-size: 0.85rem !important;
-            padding: 0.6rem 1.5rem !important;
+            padding: 0.65rem 1.25rem !important;
+            min-height: 44px !important;
+            width: 100% !important;
             transition: all 0.3s ease !important;
         }
         button[data-testid="baseButton-secondary"]:hover {
@@ -156,6 +163,7 @@ def inject_custom_css():
         }
         input, select, textarea {
             border-radius: 2px !important;
+            font-size: 16px !important; /* 防止 iOS 自動縮放 */
         }
 
         /* KPI 指標卡片 */
@@ -163,7 +171,7 @@ def inject_custom_css():
             background-color: var(--color-surface);
             border: 1px solid var(--color-border);
             border-radius: 2px;
-            padding: 1.5rem;
+            padding: 1.25rem;
             text-align: left;
             transition: border-color 0.3s ease;
         }
@@ -172,7 +180,7 @@ def inject_custom_css():
         }
         .metric-title {
             font-family: 'Inter', sans-serif;
-            font-size: 0.8rem;
+            font-size: 0.78rem;
             letter-spacing: 0.05em;
             color: var(--color-text-muted);
             margin-bottom: 0.5rem;
@@ -180,10 +188,30 @@ def inject_custom_css():
         }
         .metric-value {
             font-family: 'Playfair Display', serif;
-            font-size: 2.2rem;
+            font-size: 1.9rem;
             font-weight: 400;
             color: var(--color-text);
             line-height: 1.1;
+        }
+
+        /* ── RWD：手機版 ── */
+        @media (max-width: 768px) {
+            div[data-testid="stVerticalBlockBorderWrapper"] {
+                padding: 1rem !important;
+            }
+            .metric-value {
+                font-size: 1.5rem;
+            }
+            /* 側邊欄收合時主內容滿版 */
+            .main .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                max-width: 100% !important;
+            }
+            /* Dataframe 橫向捲動 */
+            div[data-testid="stDataFrameResizable"] {
+                overflow-x: auto !important;
+            }
         }
         </style>
     """, unsafe_allow_html=True)
@@ -307,7 +335,7 @@ def render_metrics_cards(df: pd.DataFrame):
         return str(num)
         
     metrics_html = f"""
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px;">
         <div class="metric-card">
             <div class="metric-title">採集影片總數</div>
             <div class="metric-value">{total_shorts}</div>
@@ -679,11 +707,11 @@ def main():
     
     # 頂部 Hero Banner (Clinical Elegance)
     hero_html = """
-    <div style="border-bottom: 1px solid #EBEBEB; padding-bottom: 32px; margin-bottom: 40px; margin-top: 20px;">
-        <h1 style="margin: 0; font-size: 3rem; font-weight: 500; font-family: 'Playfair Display', serif; color: #1A1A1A; line-height: 1.1;">
+    <div style="border-bottom: 1px solid #EBEBEB; padding-bottom: 24px; margin-bottom: 32px; margin-top: 12px;">
+        <h1 style="margin: 0; font-size: clamp(1.8rem, 5vw, 3rem); font-weight: 500; font-family: 'Playfair Display', serif; color: #1A1A1A; line-height: 1.1;">
             醫美情報與 AI 分析
         </h1>
-        <p style="margin: 16px 0 0 0; color: #6B7280; font-family: 'Inter', sans-serif; font-size: 1rem; font-weight: 400; max-width: 600px; line-height: 1.6;">
+        <p style="margin: 12px 0 0 0; color: #6B7280; font-family: 'Inter', sans-serif; font-size: clamp(0.85rem, 2.5vw, 1rem); font-weight: 400; max-width: 600px; line-height: 1.6;">
             專為醫美產業打造的精準市場情報與 AI 分析系統。追蹤 YouTube Shorts 趨勢，並無縫推送洞察報告。
         </p>
     </div>
