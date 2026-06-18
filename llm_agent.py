@@ -30,8 +30,10 @@ logger = logging.getLogger("llm_agent")
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "anthropic/claude-sonnet-4.5"
-# 餵給 LLM 的影片筆數上限，避免 prompt 過長。
-MAX_ROWS_IN_PROMPT = 40
+# 每個關鍵字最多取幾支送進 Prompt，避免某單一關鍵字佔滿樣本。
+TOP_PER_KEYWORD = 5
+# 送進 Prompt 的影片總筆數上限（分層後再截）。
+MAX_ROWS_IN_PROMPT = 25
 
 SYSTEM_PROMPT = (
     "你是專精『醫美 / 美容診所』的短影音市場分析師，"
@@ -57,7 +59,19 @@ def _get_client(api_key: str | None = None, base_url: str | None = None) -> Open
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
-def _dataframe_to_context(df: pd.DataFrame, max_rows: int = MAX_ROWS_IN_PROMPT) -> str:
+def _select_samples(df: pd.DataFrame, top_per_kw: int = TOP_PER_KEYWORD, max_total: int = MAX_ROWS_IN_PROMPT) -> pd.DataFrame:
+    """分層抽樣：每個關鍵字取觀看數 top N，再全體截到 max_total。"""
+    if "keyword" not in df.columns:
+        return df.sort_values("view_count", ascending=False).head(max_total)
+    frames = [
+        grp.sort_values("view_count", ascending=False).head(top_per_kw)
+        for _, grp in df.groupby("keyword")
+    ]
+    sampled = pd.concat(frames).sort_values("view_count", ascending=False)
+    return sampled.head(max_total)
+
+
+def _dataframe_to_context(df: pd.DataFrame) -> str:
     """把 DataFrame 摘要成餵給 LLM 的文字脈絡。"""
     if df is None or df.empty:
         return "（沒有任何影片資料）"
@@ -65,7 +79,7 @@ def _dataframe_to_context(df: pd.DataFrame, max_rows: int = MAX_ROWS_IN_PROMPT) 
     cols = [c for c in ["keyword", "title", "channel", "view_count",
                         "like_count", "duration_sec", "published_at", "url"]
             if c in df.columns]
-    top = df.sort_values("view_count", ascending=False).head(max_rows)
+    selected = _select_samples(df)
 
     lines = []
     # 各關鍵字觀看數加總概況
@@ -80,8 +94,8 @@ def _dataframe_to_context(df: pd.DataFrame, max_rows: int = MAX_ROWS_IN_PROMPT) 
             lines.append(f"- {kw}：{int(row['count'])} 支，總觀看 {int(row['sum']):,}")
         lines.append("")
 
-    lines.append(f"## 熱門影片明細（前 {len(top)} 筆，依觀看數排序）")
-    for _, r in top[cols].iterrows():
+    lines.append(f"## 精選影片樣本（共 {len(selected)} 筆，每關鍵字 top {TOP_PER_KEYWORD}，依觀看數排序）")
+    for _, r in selected[cols].iterrows():
         parts = []
         if "keyword" in cols:
             parts.append(f"[{r['keyword']}]")
@@ -93,6 +107,8 @@ def _dataframe_to_context(df: pd.DataFrame, max_rows: int = MAX_ROWS_IN_PROMPT) 
             parts.append(f"{int(r.get('duration_sec', 0))}s")
         if "channel" in cols:
             parts.append(f"頻道:{r.get('channel', '')}")
+        if "url" in cols:
+            parts.append(f"url:{r.get('url', '')}")
         lines.append("- " + " | ".join(parts))
 
     return "\n".join(lines)
