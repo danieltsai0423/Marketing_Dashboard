@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 from urllib.request import Request, urlopen
 
 from content_model import (
@@ -32,8 +32,8 @@ logger = logging.getLogger("apify_service")
 APIFY_BASE_URL = "https://api.apify.com/v2"
 DEFAULT_ACTORS: dict[Platform, str] = {
     "instagram": "apify/instagram-scraper",
-    "facebook": "apify/facebook-videos-scraper",
-    "threads": "apify/threads-scraper",
+    "facebook": "apify/facebook-posts-scraper",
+    "threads": "automation-lab/threads-scraper",
 }
 
 
@@ -83,30 +83,45 @@ def _run_actor(actor_id: str, payload: dict[str, Any], api_token: str | None, ti
         raise ApifyServiceError("Apify returned invalid JSON.") from exc
     if not isinstance(data, list):
         raise ApifyServiceError("Apify returned an unexpected dataset shape.")
-    return [item for item in data if isinstance(item, dict)]
+    items = [item for item in data if isinstance(item, dict)]
+    error_items = [item for item in items if item.get("error") or item.get("errorDescription")]
+    if error_items:
+        details = "; ".join(
+            f"{item.get('error', 'error')}: {item.get('errorDescription') or item.get('message') or ''}".strip()
+            for item in error_items[:3]
+        )
+        raise ApifyServiceError(f"Apify actor returned dataset error item(s): {details}")
+    return items
 
 
 def build_actor_input(platform: Platform, keyword: str, limit: int) -> dict[str, Any]:
     keyword = keyword.strip()
     if platform == "instagram":
+        hashtag = keyword.lstrip("#")
         return {
-            "search": keyword,
-            "hashtags": [keyword.lstrip("#")],
+            "directUrls": [f"https://www.instagram.com/explore/tags/{quote_plus(hashtag)}/"],
+            "searchType": "hashtag",
+            "searchLimit": 1,
             "resultsLimit": limit,
             "resultsType": "posts",
             "proxy": {"useApifyProxy": True},
         }
     if platform == "facebook":
+        if not keyword.startswith(("http://", "https://")):
+            raise ApifyServiceError(
+                "Facebook Posts Scraper requires a public Facebook page/profile URL, "
+                "for example https://www.facebook.com/humansofnewyork/."
+            )
+        url = keyword
         return {
-            "searchQueries": [keyword],
+            "startUrls": [{"url": url}],
             "resultsLimit": limit,
-            "videoType": "shorts",
-            "proxy": {"useApifyProxy": True},
         }
     if platform == "threads":
         return {
+            "mode": "search",
             "searchQueries": [keyword],
-            "resultsLimit": limit,
+            "maxPosts": limit,
             "proxy": {"useApifyProxy": True},
         }
     raise ApifyServiceError(f"Unsupported Apify platform: {platform}")
@@ -125,8 +140,9 @@ def fetch_apify_contents(
     actor = _actor_id(platform)
     items: list[UniversalContentModel] = []
     for keyword in [kw.strip() for kw in keywords if kw.strip()]:
+        actor_input = build_actor_input(platform, keyword, result_limit)
         logger.info("Running Apify actor %s for %s", actor, keyword)
-        raw_items = _run_actor(actor, build_actor_input(platform, keyword, result_limit), api_token, timeout)
+        raw_items = _run_actor(actor, actor_input, api_token, timeout)
         items.extend(transform_apify_items(platform, raw_items, keyword))
     return items
 
@@ -144,6 +160,7 @@ def transform_apify_item(platform: Platform, item: dict[str, Any], keyword: str)
         item.get("id"),
         item.get("shortCode"),
         item.get("postId"),
+        item.get("code"),
         item.get("pk"),
         item.get("url"),
         default=f"{keyword}-{hash(json.dumps(item, sort_keys=True, default=str))}",
@@ -154,11 +171,15 @@ def transform_apify_item(platform: Platform, item: dict[str, Any], keyword: str)
     user = item.get("user") if isinstance(item.get("user"), dict) else {}
     author_name = first_text(
         item.get("authorName"),
+        item.get("fullName"),
+        item.get("pageName"),
         item.get("ownerUsername"),
         item.get("username"),
         author.get("username"),
+        author.get("name"),
         author.get("fullName"),
         user.get("username"),
+        user.get("name"),
         user.get("fullName"),
         default="Unknown",
     )
@@ -180,6 +201,7 @@ def transform_apify_item(platform: Platform, item: dict[str, Any], keyword: str)
         item.get("video_url"),
         item.get("displayUrl"),
         item.get("imageUrl"),
+        item.get("thumbnail"),
         item.get("images"),
         item.get("media"),
         item.get("latestVideoUrl"),
@@ -187,6 +209,7 @@ def transform_apify_item(platform: Platform, item: dict[str, Any], keyword: str)
     )
     thumbnail = first_text(
         item.get("thumbnailUrl"),
+        item.get("thumbnail"),
         item.get("displayUrl"),
         item.get("imageUrl"),
         media_urls[0] if media_urls else None,
@@ -199,6 +222,7 @@ def transform_apify_item(platform: Platform, item: dict[str, Any], keyword: str)
         item.get("date"),
         item.get("createdAt"),
         item.get("takenAt"),
+        item.get("time"),
     )
 
     views = first_optional_int(
@@ -222,8 +246,8 @@ def transform_apify_item(platform: Platform, item: dict[str, Any], keyword: str)
         metrics=ContentMetrics(
             views=views,
             likes=first_int(item.get("likesCount"), item.get("likeCount"), item.get("likes"), default=0),
-            comments=first_int(item.get("commentsCount"), item.get("commentCount"), item.get("comments"), default=0),
-            reposts=first_optional_int(item.get("repostsCount"), item.get("shareCount"), item.get("shares")),
+            comments=first_int(item.get("commentsCount"), item.get("commentCount"), item.get("comments"), item.get("replyCount"), default=0),
+            reposts=first_optional_int(item.get("repostsCount"), item.get("repostCount"), item.get("shareCount"), item.get("shares")),
         ),
         publishedAt=published_at,
         fetchedKeyword=keyword,

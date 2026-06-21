@@ -75,6 +75,7 @@ I18N: dict[str, dict[str, str]] = {
         "sc_settings": "數據抓取設定",
         "sc_keywords": "監控關鍵字（讀自 keywords.csv）",
         "sc_extra": "額外自訂關鍵字（以逗號分隔）",
+        "sc_platform_hint": "Facebook 目前使用公開粉專/個人頁 URL；Instagram 與 Threads 使用關鍵字/hashtag 搜尋。",
         "sc_platforms": "監控平台",
         "sc_days": "YouTube 回溯天數",
         "sc_max_sec": "YouTube 影片時長上限（秒）",
@@ -166,6 +167,7 @@ I18N: dict[str, dict[str, str]] = {
         "sc_settings": "Fetch settings",
         "sc_keywords": "Keywords (from keywords.csv)",
         "sc_extra": "Extra keywords, comma separated",
+        "sc_platform_hint": "Facebook currently expects public page/profile URLs; Instagram and Threads use keyword/hashtag search.",
         "sc_platforms": "Platforms",
         "sc_days": "YouTube lookback days",
         "sc_max_sec": "YouTube max seconds",
@@ -582,6 +584,7 @@ def render_scraper_tab() -> None:
             extra = st.text_input(t("sc_extra"), key="sc_extra")
             if extra.strip():
                 selected += [item.strip() for item in extra.split(",") if item.strip()]
+            st.caption(t("sc_platform_hint"))
         with cols[1]:
             platforms = st.multiselect(
                 t("sc_platforms"),
