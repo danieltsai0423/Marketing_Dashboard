@@ -1,6 +1,6 @@
 """跨平台社群情報儀表板（Streamlit）。
 
-升級自醫美 YouTube Shorts 儀表板，現支援 YouTube / Instagram / Facebook / Threads，
+升級自 YouTube Shorts 儀表板，現支援 YouTube / Instagram / Facebook / Threads，
 資料統一走 UniversalContentModel（見 content_model.py）。
 
 介面雙語：預設繁體中文，可於側邊欄切換英文。
@@ -55,7 +55,7 @@ I18N: dict[str, dict[str, str]] = {
     "zh": {
         "app_title": "跨平台社群情報與 AI 分析",
         "app_caption": "UniversalContentModel 統一資料流 · Asia/Taipei · {time}",
-        "app_subtitle": "整合 YouTube、Instagram、Facebook、Threads 的醫美熱門內容情報，並無縫產出 AI 洞察報告。",
+        "app_subtitle": "整合 YouTube、Instagram、Facebook、Threads 的熱門社群內容情報，並無縫產出 AI 洞察報告。",
         "lang_label": "語言 / Language",
         "tab_search": "情報採集",
         "tab_report": "AI 深度洞察",
@@ -249,7 +249,7 @@ def t(key: str, **kwargs: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CSS（醫美品牌：Playfair + Inter，金色主題）
+# CSS（品牌樣式：Playfair + Inter，金色主題）
 # ---------------------------------------------------------------------------
 def inject_custom_css() -> None:
     st.markdown(

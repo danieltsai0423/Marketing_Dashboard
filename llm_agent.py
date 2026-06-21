@@ -1,4 +1,4 @@
-"""LLM Agent：把 YouTube Shorts 數據轉成醫美市場情報報告。
+"""LLM Agent：把跨平台社群內容數據轉成市場情報報告。
 
 統一走 OpenRouter（OpenAI 相容介面），用 openai SDK：
   - base_url = OPENROUTER_BASE_URL
@@ -36,9 +36,10 @@ TOP_PER_KEYWORD = 5
 MAX_ROWS_IN_PROMPT = 25
 
 SYSTEM_PROMPT = (
-    "你是專精『醫美 / 美容診所』的短影音市場分析師，"
-    "服務對象是台灣診所行銷團隊。"
-    "分析時聚焦台灣繁體中文受眾市場，簡體中文或中國市場的影片僅供參考，不要特別強調。"
+    "你是專精『跨平台短影音與社群內容』的市場趨勢分析師，"
+    "分析涵蓋 YouTube、Instagram、Facebook、Threads 等平台，"
+    "服務對象是台灣的內容創作者與品牌行銷團隊。"
+    "分析時聚焦台灣繁體中文受眾市場，簡體中文或中國市場的內容僅供參考，不要特別強調。"
     "請用繁體中文、條理清晰的 Markdown 輸出，數據導向、可執行。"
     "【重要格式規定】禁止使用 Markdown 表格（| 欄位 | 格式），"
     "所有數據一律改用條列式清單（- 或數字序號）呈現。"
@@ -72,41 +73,62 @@ def _select_samples(df: pd.DataFrame, top_per_kw: int = TOP_PER_KEYWORD, max_tot
 
 
 def _dataframe_to_context(df: pd.DataFrame) -> str:
-    """把 DataFrame 摘要成餵給 LLM 的文字脈絡。"""
+    """把 DataFrame 摘要成餵給 LLM 的文字脈絡（平台感知）。"""
     if df is None or df.empty:
-        return "（沒有任何影片資料）"
+        return "（沒有任何內容資料）"
 
-    cols = [c for c in ["keyword", "title", "channel", "view_count",
-                        "like_count", "duration_sec", "published_at", "url"]
+    cols = [c for c in ["platform", "keyword", "title", "content", "channel",
+                        "view_count", "like_count", "comment_count", "published_at", "url"]
             if c in df.columns]
     selected = _select_samples(df)
 
     lines = []
-    # 各關鍵字觀看數加總概況
+    # 各平台概況
+    if "platform" in df.columns:
+        pagg = (
+            df.groupby("platform")["view_count"]
+            .agg(["count", "sum"])
+            .sort_values("sum", ascending=False)
+        )
+        lines.append("## 各平台概況（內容數 / 總觀看數）")
+        for platform, row in pagg.iterrows():
+            lines.append(f"- {platform}：{int(row['count'])} 則，總觀看 {int(row['sum']):,}")
+        lines.append("")
+
+    # 各關鍵字概況
     if "keyword" in df.columns:
         agg = (
             df.groupby("keyword")["view_count"]
             .agg(["count", "sum"])
             .sort_values("sum", ascending=False)
         )
-        lines.append("## 各關鍵字概況（影片數 / 總觀看數）")
+        lines.append("## 各關鍵字概況（內容數 / 總觀看數）")
         for kw, row in agg.iterrows():
-            lines.append(f"- {kw}：{int(row['count'])} 支，總觀看 {int(row['sum']):,}")
+            lines.append(f"- {kw}：{int(row['count'])} 則，總觀看 {int(row['sum']):,}")
         lines.append("")
 
-    lines.append(f"## 精選影片樣本（共 {len(selected)} 筆，每關鍵字 top {TOP_PER_KEYWORD}，依觀看數排序）")
+    lines.append(f"## 精選內容樣本（共 {len(selected)} 筆，每關鍵字 top {TOP_PER_KEYWORD}，依觀看數排序）")
     for _, r in selected[cols].iterrows():
         parts = []
+        if "platform" in cols:
+            parts.append(f"[{r['platform']}]")
         if "keyword" in cols:
-            parts.append(f"[{r['keyword']}]")
-        parts.append(str(r.get("title", "")))
+            parts.append(f"#{r['keyword']}")
+        # 標題優先，無標題（如 Threads 純圖文，title 為 NaN）則取內文
+        text = ""
+        for key in ("title", "content"):
+            val = r.get(key)
+            if isinstance(val, str) and val.strip():
+                text = val.replace("\n", " ").strip()
+                break
+        if len(text) > 60:
+            text = text[:57] + "..."
+        parts.append(text)
         parts.append(f"觀看 {int(r.get('view_count', 0)):,}")
         if "like_count" in cols:
             parts.append(f"讚 {int(r.get('like_count', 0)):,}")
-        if "duration_sec" in cols:
-            parts.append(f"{int(r.get('duration_sec', 0))}s")
         if "channel" in cols:
-            parts.append(f"頻道:{r.get('channel', '')}")
+            parts.append(f"作者:{r.get('channel', '')}")
         if "url" in cols:
             parts.append(f"url:{r.get('url', '')}")
         lines.append("- " + " | ".join(parts))
@@ -116,25 +138,25 @@ def _dataframe_to_context(df: pd.DataFrame) -> str:
 
 def _build_messages(df: pd.DataFrame, extra_instruction: str | None = None) -> list[dict]:
     context = _dataframe_to_context(df)
-    user_prompt = f"""以下是過去一段期間，醫美相關關鍵字在 YouTube Shorts 的數據：
+    user_prompt = f"""以下是過去一段期間，相關關鍵字在各社群平台（YouTube / Instagram / Facebook / Threads）的熱門內容數據：
 
 {context}
 
-請產出一份「醫美短影音市場情報報告」，結構如下：
+請產出一份「跨平台社群內容市場情報報告」，結構如下：
 
-# 醫美短影音市場情報報告
+# 跨平台社群內容市場情報報告
 
 ## 一、本期趨勢摘要
-（3-5 點，點出哪些主題/關鍵字最熱、整體聲量觀察）
+（3-5 點，點出哪些主題/關鍵字最熱、哪些平台聲量較高、整體觀察）
 
-## 二、爆款影片解析
-（挑 3-5 支高觀看影片，分析它們的標題鉤子、題材、為何會紅；每支影片末尾必須附上影片連結，格式為「🔗 影片連結」，連結從數據中的 url 欄位取得）
+## 二、爆款內容解析
+（挑 3-5 則高表現內容，分析它們的鉤子、題材、為何會紅；每則末尾必須附上原始連結，格式為「🔗 連結」，連結從數據中的 url 欄位取得，並標註所屬平台）
 
-## 三、診所選題建議
-（給 5-8 個可直接執行的短影音選題方向，附一句切角說明，聚焦台灣市場受眾）
+## 三、內容選題建議
+（給 5-8 個可直接執行的內容選題方向，附一句切角說明，並可建議適合的平台，聚焦台灣市場受眾）
 
 ## 四、風險與注意事項
-（醫美廣告法規、誇大療效用語等需避免的點）
+（內容合規、平台演算法變動、避免誤導或爭議用語等需注意的點）
 """
     if extra_instruction:
         user_prompt += f"\n額外要求：{extra_instruction}\n"
@@ -201,14 +223,16 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     logging.basicConfig(level=logging.INFO)
 
-    from youtube_service import fetch_shorts
+    from data_router import fetch_content_dataframe
 
-    print("抓取測試資料（線雕/音波拉提/電波拉皮，過去 30 天）...")
-    df = fetch_shorts(["線雕", "音波拉提", "電波拉皮"], days=30)
-    print(f"抓到 {len(df)} 支 Shorts，開始產生報告...\n")
+    print("抓取測試資料（美食/旅遊，YouTube，過去 30 天）...")
+    df, errors = fetch_content_dataframe(["美食", "旅遊"], platforms=["youtube"], days=30)
+    for platform, err in errors.items():
+        print(f"[警告] {platform}: {err}")
+    print(f"抓到 {len(df)} 則內容，開始產生報告...\n")
 
     try:
-        report = generate_report(df)
+        report, _run_id = generate_report(df)
     except LLMAgentError as e:
         print(f"\n[錯誤] {e}")
         raise SystemExit(1)

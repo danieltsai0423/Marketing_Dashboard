@@ -151,7 +151,7 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     logging.basicConfig(level=logging.INFO)
 
-    test_msg = "【測試推播】醫美短影音情報系統 LINE OA Broadcast 測試 ✅"
+    test_msg = "【測試推播】跨平台社群情報系統 LINE OA Broadcast 測試 ✅"
     try:
         n = push_report(test_msg)
         print(f"成功 broadcast {n} 則訊息。")
