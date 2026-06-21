@@ -1,6 +1,8 @@
-# Cross-Platform Social Content Intelligence Dashboard
+# 跨平台社群內容情報儀表板
 
-> Collect trending short-form content across **YouTube, Instagram, Facebook, and Threads**, normalize it into a single data model, generate AI market-analysis reports, and push them to LINE — all from one local Streamlit app.
+**繁體中文** | [English](./README.en.md)
+
+> 整合 **YouTube、Instagram、Facebook、Threads** 的熱門短影音／貼文，正規化為統一資料模型，透過 LLM 自動生成市場分析報告，並可推播至 LINE —— 一個本地部署的 Streamlit 應用。
 
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white">
@@ -11,54 +13,54 @@
 
 ---
 
-## Overview
+## 專案概述
 
-A locally deployed market-intelligence system for social content. Enter keywords, pick the platforms, and the app fetches the top-performing posts/videos from four social platforms in parallel, normalizes the heterogeneous responses into a unified `UniversalContentModel`, and uses an LLM agent to produce an actionable Traditional-Chinese market report. It also supports weekly scheduling and LINE broadcast.
+一套本地部署的社群內容市場情報系統。使用者輸入關鍵字並勾選平台後，系統會**平行**從四個社群平台抓取表現最佳的貼文／影片，將格式迥異的回應正規化為統一的 `UniversalContentModel`，再透過 LLM Agent 產出可執行的繁體中文市場分析報告，並支援每週自動化排程與 LINE 推播。
 
-The dashboard started as a single-platform YouTube Shorts monitor and was refactored into a **general-purpose, multi-platform** architecture that works for any content niche (food, travel, fitness, beauty, …).
+本儀表板原為單一平台的 YouTube Shorts 監測工具，後重構為**通用型、跨平台**架構，可套用於任何內容領域（美食、旅遊、健身、美妝……）。
 
-## Features
+## 功能特色
 
-- **Four platforms, hybrid sources** — YouTube via the official Data API v3; Instagram / Facebook / Threads via Apify actors.
-- **Unified data model** — one schema (`UniversalContentModel`) across platforms, with backward-compatible aliases so the UI, reports, and storage layers stay decoupled from any single source.
-- **Parallel request routing** — a data router fans out to selected platforms concurrently (`ThreadPoolExecutor`); a single platform failure is isolated and surfaced, not fatal.
-- **Inclusive UI components** — video platforms render as vertical thumbnails; Threads renders X-style text-first cards. Unified sorting handles content with no view count (sinks to bottom / falls back to likes).
-- **Bilingual interface** — Traditional Chinese by default, switch to English live from the sidebar.
-- **AI reports** — streamed Markdown reports (trends, breakout analysis, content ideas, risk notes) via OpenRouter (OpenAI-compatible).
-- **Automation & delivery** — weekly `APScheduler` job and LINE broadcast.
-- **Graceful degradation** — falls back to local JSONL/Markdown when Supabase isn't configured; missing API keys are shown in the sidebar without breaking other features.
+- **四平台、混合資料源** —— YouTube 走官方 Data API v3；Instagram／Facebook／Threads 走 Apify Actor。
+- **統一資料模型** —— 跨平台共用單一 schema（`UniversalContentModel`），並保留向後相容欄位別名，讓 UI、報告與儲存層與任一資料源解耦。
+- **平行請求路由** —— 資料路由中樞以 `ThreadPoolExecutor` 同時對選定平台發送請求；單一平台失敗會被隔離並回報，不會中斷整體。
+- **包容性 UI 元件** —— 影片平台以直式縮圖呈現，Threads 以類 X 的大字圖文卡片呈現；統一排序會處理「無觀看數」內容（置底／以按讚數遞補）。
+- **雙語介面** —— 預設繁體中文，可於側邊欄即時切換英文。
+- **AI 報告** —— 透過 OpenRouter（OpenAI 相容）串流輸出 Markdown 報告（趨勢摘要、爆款解析、選題建議、風險提醒）。
+- **自動化與推播** —— `APScheduler` 每週排程 + LINE 廣播。
+- **優雅降級** —— 未設定 Supabase 時自動退回本地 JSONL／Markdown 落地；缺少金鑰會於側邊欄顯示狀態而不影響其他功能。
 
-## Architecture
+## 系統架構
 
 ```
-[ keywords & platform selection ]
+[ 關鍵字 & 平台選擇 ]
               │
               ▼
-[ Data Router ] ── ThreadPoolExecutor (parallel fan-out)
+[ 資料路由中樞 ] ── ThreadPoolExecutor（平行 fan-out）
       ├── YouTube   ─► YouTube Data API v3
       ├── Instagram ─► Apify instagram-scraper
       ├── Facebook  ─► Apify facebook-videos-scraper
       └── Threads   ─► Apify threads-scraper
               │
               ▼
-[ UniversalContentModel ] ◄── cross-platform cleaning & normalization
+[ UniversalContentModel ] ◄── 跨平台清洗與正規化
               │
               ▼
-[ Streamlit UI ]  /  [ LLM report agent ]  /  [ LINE push ]  /  [ Supabase store ]
+[ Streamlit UI ]  /  [ LLM 報告 Agent ]  /  [ LINE 推播 ]  /  [ Supabase 知識庫 ]
 ```
 
-## Tech Stack
+## 技術棧
 
 `Python` · `Streamlit` · `pandas` · `Plotly` · `YouTube Data API v3` · `Apify` · `OpenRouter (LLM)` · `APScheduler` · `Supabase` · `pytest`
 
-## Getting Started
+## 快速開始
 
-### Prerequisites
+### 環境需求
 
-- Python 3.12 or 3.13 recommended (a virtualenv is advised).
-- API keys for the services you want to use (see [Environment variables](#environment-variables)).
+- 建議 Python 3.12 或 3.13（建議使用 virtualenv）。
+- 欲使用之服務的 API 金鑰（見[環境變數](#環境變數)）。
 
-### Install
+### 安裝
 
 ```bash
 python -m venv .venv
@@ -66,62 +68,62 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Configure
+### 設定
 
 ```bash
-cp .env.example .env             # then fill in your keys
+cp .env.example .env             # 接著填入你的金鑰
 ```
 
-### Run
+### 執行
 
 ```bash
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`.
+開啟後位於 `http://localhost:8501`。
 
-> Note: the UI, tabs, language switch, and card layouts are fully browsable without any keys. Live fetching requires the relevant keys below.
+> 提醒：介面、分頁、語言切換與卡片版型在沒有任何金鑰時即可完整瀏覽；實際抓取資料才需要下列對應金鑰。
 
-## Environment Variables
+## 環境變數
 
-Copy `.env.example` to `.env` and fill in what you need:
+複製 `.env.example` 為 `.env` 並依需求填入：
 
-| Variable | Purpose | Required for |
+| 變數 | 用途 | 必填於 |
 | --- | --- | --- |
-| `YOUTUBE_API_KEY` | YouTube Data API v3 | YouTube fetching |
-| `APIFY_API_TOKEN` | Apify actors | Instagram / Facebook / Threads fetching |
-| `APIFY_*_ACTOR` | Override actor ids | optional (sensible defaults) |
-| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | LLM report generation | AI reports |
-| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API | LINE push (optional) |
-| `SUPABASE_URL` / `SUPABASE_KEY` | History knowledge base | optional (local JSONL fallback) |
+| `YOUTUBE_API_KEY` | YouTube Data API v3 | YouTube 抓取 |
+| `APIFY_API_TOKEN` | Apify Actor | Instagram／Facebook／Threads 抓取 |
+| `APIFY_*_ACTOR` | 覆寫 Actor id | 可選（已有合理預設） |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | LLM 報告生成 | AI 報告 |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API | LINE 推播（可選） |
+| `SUPABASE_URL` / `SUPABASE_KEY` | 歷史知識庫 | 可選（退回本地 JSONL） |
 
-`.env` is gitignored and never committed.
+`.env` 已被 gitignore，不會進版控。
 
-## Project Structure
+## 專案結構
 
 ```
-app.py              # Streamlit UI: tabs, i18n, cards, charts, scheduler
-data_router.py      # Parallel routing across platforms → UniversalContentModel
-content_model.py    # UniversalContentModel + parsing helpers
-youtube_service.py  # YouTube Data API v3 (two-stage fetch, Shorts filter)
-apify_service.py    # Apify actors for IG / FB / Threads + defensive transforms
-llm_agent.py        # DataFrame → prompt → streamed Markdown report (OpenRouter)
-line_service.py     # LINE broadcast with 5000-char chunking
-db_service.py       # Supabase persistence + local JSONL/Markdown fallback
-keywords.csv        # Default keyword presets (editable)
-tests/              # pytest suite (unit + Streamlit AppTest)
+app.py              # Streamlit UI：分頁、i18n、卡片、圖表、排程
+data_router.py      # 跨平台平行路由 → UniversalContentModel
+content_model.py    # UniversalContentModel 與解析輔助
+youtube_service.py  # YouTube Data API v3（兩階段抓取、Shorts 篩選）
+apify_service.py    # IG / FB / Threads 的 Apify Actor + 防禦式轉換
+llm_agent.py        # DataFrame → prompt → 串流 Markdown 報告（OpenRouter）
+line_service.py     # LINE 廣播（5000 字分段）
+db_service.py       # Supabase 持久化 + 本地 JSONL／Markdown 落地
+keywords.csv        # 預設關鍵字清單（可編輯）
+tests/              # pytest 測試套件（單元 + Streamlit AppTest）
 ```
 
-## Testing
+## 測試
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
 
-24 tests cover the data model, Apify transforms, router sorting/error isolation, LLM prompt assembly, and an end-to-end Streamlit `AppTest` smoke (bilingual rendering + cross-platform card rendering). Key regressions (duplicate widget ids in English mode, `NaN` title handling, none-view sorting) are locked down by tests.
+24 項測試涵蓋資料模型、Apify 轉換、路由排序與錯誤隔離、LLM prompt 組裝，以及端到端的 Streamlit `AppTest` 冒煙測試（雙語渲染 + 跨平台卡片渲染）。關鍵迴歸（英文模式重複 widget id、`NaN` 標題處理、無觀看數排序）皆由測試鎖定。
 
-## Notes
+## 注意事項
 
-- Apify actor input schemas are defensive defaults; the Facebook keyword-search path in particular may need tuning to the specific actor you use.
-- LLM reports are generated in Traditional Chinese regardless of UI language.
+- Apify Actor 的 input schema 為防禦式預設；尤其 Facebook 關鍵字搜尋路徑可能需依你實際使用的 Actor 調整。
+- LLM 報告無論 UI 語言為何，皆以繁體中文產出。
