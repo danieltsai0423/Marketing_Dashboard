@@ -23,6 +23,8 @@ import pandas as pd
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from content_model import ContentMetrics, UniversalContentModel, first_text
+
 try:
     from dotenv import load_dotenv
 
@@ -216,6 +218,48 @@ def fetch_shorts(
     df = df.sort_values("view_count", ascending=False).reset_index(drop=True)
     logger.info("過濾後共 %d 支 Shorts。", len(df))
     return df
+
+
+def transform_youtube_row(row: dict, keyword: str | None = None) -> UniversalContentModel:
+    video_id = first_text(row.get("video_id"), row.get("id"))
+    title = first_text(row.get("title"), default="")
+    return UniversalContentModel(
+        id=f"youtube:{video_id}",
+        platform="youtube",
+        authorName=first_text(row.get("channel"), row.get("channelTitle"), default="Unknown"),
+        title=title or None,
+        content=title,
+        url=first_text(row.get("url"), default=f"https://www.youtube.com/watch?v={video_id}"),
+        mediaUrls=[],
+        thumbnail=first_text(row.get("thumbnail"), row.get("thumbnailUrl"), default="") or None,
+        metrics=ContentMetrics(
+            views=int(row.get("view_count") or row.get("viewCount") or 0),
+            likes=int(row.get("like_count") or row.get("likeCount") or 0),
+            comments=int(row.get("comment_count") or row.get("commentCount") or 0),
+            reposts=None,
+        ),
+        publishedAt=first_text(row.get("published_at"), row.get("publishedAt"), default=""),
+        fetchedKeyword=first_text(keyword, row.get("keyword"), default=""),
+    )
+
+
+def fetch_youtube_contents(
+    keywords: list[str],
+    days: int = 7,
+    api_key: str | None = None,
+    max_seconds: int = SHORTS_MAX_SECONDS,
+    progress_callback=None,
+) -> list[UniversalContentModel]:
+    df = fetch_shorts(
+        keywords=keywords,
+        days=days,
+        api_key=api_key,
+        max_seconds=max_seconds,
+        progress_callback=progress_callback,
+    )
+    if df.empty:
+        return []
+    return [transform_youtube_row(row) for row in df.to_dict(orient="records")]
 
 
 if __name__ == "__main__":

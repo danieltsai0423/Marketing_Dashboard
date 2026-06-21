@@ -1,17 +1,18 @@
-"""醫美短影音市場情報儀表板（Streamlit）。
+"""跨平台社群情報儀表板（Streamlit）。
 
-區塊 A：側邊欄 — 金鑰狀態與排程指示器
-區塊 B：分頁1 — 關鍵字與數據抓取
-區塊 C：分頁2 — AI 分析報告與 LINE 發送
-區塊 D：分頁3 — 每週自動化排程
+升級自醫美 YouTube Shorts 儀表板，現支援 YouTube / Instagram / Facebook / Threads，
+資料統一走 UniversalContentModel（見 content_model.py）。
 
+介面雙語：預設繁體中文，可於側邊欄切換英文。
 啟動：py -m streamlit run app.py
 """
 
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
@@ -24,202 +25,305 @@ try:
 except ImportError:
     pass
 
-from youtube_service import fetch_shorts, YouTubeServiceError
-from llm_agent import stream_report, generate_report, LLMAgentError
-from line_service import push_report, LineServiceError
 import db_service
+from data_router import SUPPORTED_PLATFORMS, DataRouterError, fetch_content_dataframe
+from line_service import LineServiceError, push_report
+from llm_agent import LLMAgentError, generate_report, stream_report
 
 KEYWORDS_CSV = "keywords.csv"
-WEEKDAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+# APScheduler day_of_week 索引（0=mon）。
+WEEKDAY_CODES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
-st.set_page_config(page_title="醫美情報與分析系統", page_icon="✧", layout="wide")
+PLATFORM_COLORS = {
+    "youtube": "#FF0000",
+    "instagram": "#E1306C",
+    "facebook": "#1877F2",
+    "threads": "#111111",
+}
+
+st.set_page_config(
+    page_title="跨平台社群情報儀表板",
+    page_icon="✦",
+    layout="wide",
+)
 
 
 # ---------------------------------------------------------------------------
-# CSS 注入與 UI 美化 (Clinical Precision & Elegance)
+# i18n：雙語字典與翻譯輔助
 # ---------------------------------------------------------------------------
-def inject_custom_css():
-    st.markdown("""
+I18N: dict[str, dict[str, str]] = {
+    "zh": {
+        "app_title": "跨平台社群情報與 AI 分析",
+        "app_caption": "UniversalContentModel 統一資料流 · Asia/Taipei · {time}",
+        "app_subtitle": "整合 YouTube、Instagram、Facebook、Threads 的醫美熱門內容情報，並無縫產出 AI 洞察報告。",
+        "lang_label": "語言 / Language",
+        "tab_search": "情報採集",
+        "tab_report": "AI 深度洞察",
+        "tab_auto": "自動化排程",
+        "tab_history": "歷史知識庫",
+        # sidebar
+        "sb_env": "系統設定與狀態",
+        "sb_key_status": "API 金鑰整合",
+        "sb_configured": "已啟用",
+        "sb_missing": "待設定",
+        "sb_automation": "自動化排程狀態",
+        "sb_next_run": "下次執行：{time}",
+        "sb_no_job": "排程未啟用",
+        "sb_model": "模型",
+        # scraper
+        "sc_header": "跨平台情報採集",
+        "sc_settings": "數據抓取設定",
+        "sc_keywords": "監控關鍵字（讀自 keywords.csv）",
+        "sc_extra": "額外自訂關鍵字（以逗號分隔）",
+        "sc_platforms": "監控平台",
+        "sc_days": "YouTube 回溯天數",
+        "sc_max_sec": "YouTube 影片時長上限（秒）",
+        "sc_limit": "Apify 每平台抓取上限",
+        "sc_fetch": "開始跨平台抓取",
+        "sc_fetching": "正在抓取內容…",
+        "sc_fetching_one": "正在抓取：{label}",
+        "sc_fail": "{platform} 抓取失敗：{message}",
+        "sc_empty": "請先執行抓取以建立跨平台內容流。",
+        "sc_kw_table": "檢視關鍵字分類表 (keywords.csv)",
+        "sc_done": "抓取完成！共取得 {n} 筆內容。",
+        # metrics
+        "m_items": "採集內容總數",
+        "m_platforms": "涵蓋平台數",
+        "m_views": "已知觀看總數",
+        "m_likes": "互動數（按讚）",
+        # results
+        "r_kpi": "關鍵效能指標",
+        "r_filter_platform": "篩選平台",
+        "r_sort": "排序方式",
+        "r_cards": "顯示卡片數",
+        "r_chart_platform": "各平台互動聲量",
+        "r_chart_keyword": "各關鍵字觸及聲量（觀看／讚遞補）",
+        "r_table": "內容明細表",
+        "sort_views_or_likes": "觀看數（無則以讚遞補）",
+        "sort_likes": "按讚數",
+        "sort_comments": "留言數",
+        "sort_publishedAt": "發布時間",
+        # card
+        "c_views": "觀看 {v}",
+        "c_views_na": "觀看 —",
+        "c_likes": "讚 {v}",
+        "c_comments": "留言 {v}",
+        "c_reposts": "轉發 {v}",
+        "c_open": "開啟原文 ↗",
+        # report
+        "rp_header": "AI 深度洞察與推播",
+        "rp_need_data": "請先在「情報採集」分頁完成數據抓取。",
+        "rp_sample": "將以 {n} 筆跨平台內容樣本進行分析。",
+        "rp_instruction": "分析指令（例如：聚焦特定品牌、調整報告語氣）",
+        "rp_generate": "生成情報分析報告",
+        "rp_report_title": "市場情報報告",
+        "rp_md_src": "檢視 Markdown 原始碼",
+        "rp_send_line": "透過 LINE 發送推播",
+        "rp_sent": "已成功發送 {n} 則 LINE 訊息。",
+        # automation
+        "au_header": "背景自動化排程",
+        "au_desc": "背景自動執行：跨平台抓取 → AI 報告生成 → LINE 自動推播。",
+        "au_keywords": "目標監控關鍵字",
+        "au_platforms": "目標監控平台",
+        "au_weekday": "每週執行日",
+        "au_hour": "時 (24h)",
+        "au_minute": "分",
+        "au_enable": "啟用自動化排程",
+        "au_disable": "停用自動化排程",
+        "au_scheduled": "已設定排程：每{weekday} {time} 自動執行。",
+        "au_disabled": "自動化排程已停用。",
+        "au_run_now_title": "手動強制執行",
+        "au_run_now_desc": "立即於背景執行一次完整工作流。",
+        "au_run_now": "立即執行",
+        "au_run_done": "手動執行完畢。",
+        # history
+        "h_header": "歷史知識庫",
+        "h_not_configured": "尚未設定 Supabase（SUPABASE_URL / SUPABASE_KEY），歷史功能不可用。",
+        "h_days": "查詢近幾天",
+        "h_trend": "關鍵字觀看趨勢",
+        "h_no_data": "目前尚無歷史資料，請先執行抓取。",
+        "h_reports": "歷史報告",
+        "h_no_reports": "尚無報告記錄。",
+    },
+    "en": {
+        "app_title": "Cross-platform Social Intelligence & AI Analysis",
+        "app_caption": "UniversalContentModel feed · Asia/Taipei · {time}",
+        "app_subtitle": "Trending content intelligence across YouTube, Instagram, Facebook and Threads, with seamless AI insight reports.",
+        "lang_label": "語言 / Language",
+        "tab_search": "Collect",
+        "tab_report": "AI Insights",
+        "tab_auto": "Automation",
+        "tab_history": "History",
+        "sb_env": "Settings & Status",
+        "sb_key_status": "API key integration",
+        "sb_configured": "configured",
+        "sb_missing": "missing",
+        "sb_automation": "Automation status",
+        "sb_next_run": "Next run: {time}",
+        "sb_no_job": "No scheduled job",
+        "sb_model": "Model",
+        "sc_header": "Cross-platform collection",
+        "sc_settings": "Fetch settings",
+        "sc_keywords": "Keywords (from keywords.csv)",
+        "sc_extra": "Extra keywords, comma separated",
+        "sc_platforms": "Platforms",
+        "sc_days": "YouTube lookback days",
+        "sc_max_sec": "YouTube max seconds",
+        "sc_limit": "Apify result limit per platform",
+        "sc_fetch": "Fetch content",
+        "sc_fetching": "Fetching content…",
+        "sc_fetching_one": "Fetching: {label}",
+        "sc_fail": "{platform} failed: {message}",
+        "sc_empty": "Run a search to populate the cross-platform feed.",
+        "sc_kw_table": "View keyword table (keywords.csv)",
+        "sc_done": "Done! Collected {n} items.",
+        "m_items": "Items",
+        "m_platforms": "Platforms",
+        "m_views": "Known views",
+        "m_likes": "Likes",
+        "r_kpi": "Key metrics",
+        "r_filter_platform": "Filter platforms",
+        "r_sort": "Sort by",
+        "r_cards": "Cards",
+        "r_chart_platform": "Engagement by platform",
+        "r_chart_keyword": "Reach proxy by keyword (views/likes)",
+        "r_table": "Content table",
+        "sort_views_or_likes": "Views (likes fallback)",
+        "sort_likes": "Likes",
+        "sort_comments": "Comments",
+        "sort_publishedAt": "Published",
+        "c_views": "views {v}",
+        "c_views_na": "views —",
+        "c_likes": "likes {v}",
+        "c_comments": "comments {v}",
+        "c_reposts": "reposts {v}",
+        "c_open": "Open source ↗",
+        "rp_header": "AI insights & push",
+        "rp_need_data": "Fetch content first in the Collect tab.",
+        "rp_sample": "Analyzing {n} cross-platform samples.",
+        "rp_instruction": "Report instruction (brand focus, tone, etc.)",
+        "rp_generate": "Generate report",
+        "rp_report_title": "Market intelligence report",
+        "rp_md_src": "View Markdown source",
+        "rp_send_line": "Send to LINE",
+        "rp_sent": "Sent {n} LINE message(s).",
+        "au_header": "Background automation",
+        "au_desc": "Runs in background: cross-platform fetch → AI report → LINE push.",
+        "au_keywords": "Keywords",
+        "au_platforms": "Platforms",
+        "au_weekday": "Weekday",
+        "au_hour": "Hour (24h)",
+        "au_minute": "Minute",
+        "au_enable": "Enable weekly job",
+        "au_disable": "Disable job",
+        "au_scheduled": "Scheduled: every {weekday} at {time}.",
+        "au_disabled": "Automation disabled.",
+        "au_run_now_title": "Run now",
+        "au_run_now_desc": "Run one full workflow in the background immediately.",
+        "au_run_now": "Run now",
+        "au_run_done": "Manual run finished.",
+        "h_header": "History",
+        "h_not_configured": "Supabase is not configured (SUPABASE_URL / SUPABASE_KEY); history is unavailable.",
+        "h_days": "History days",
+        "h_trend": "Keyword view trend",
+        "h_no_data": "No history yet. Run a fetch first.",
+        "h_reports": "Saved reports",
+        "h_no_reports": "No reports yet.",
+    },
+}
+
+WEEKDAY_LABELS = {
+    "zh": ["週一", "週二", "週三", "週四", "週五", "週六", "週日"],
+    "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+}
+
+
+def lang() -> str:
+    return st.session_state.get("lang", "zh")
+
+
+def t(key: str, **kwargs: Any) -> str:
+    table = I18N.get(lang(), I18N["zh"])
+    text = table.get(key) or I18N["zh"].get(key, key)
+    return text.format(**kwargs) if kwargs else text
+
+
+# ---------------------------------------------------------------------------
+# CSS（醫美品牌：Playfair + Inter，金色主題）
+# ---------------------------------------------------------------------------
+def inject_custom_css() -> None:
+    st.markdown(
+        """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap');
-
-        /* 全域字型套用 */
+        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600&family=Inter:wght@300;400;500;600&display=swap');
+        :root {
+            --bg: #FCFBFA;
+            --surface: #FFFFFF;
+            --border: #EBEBEB;
+            --text: #1A1A1A;
+            --muted: #6B7280;
+            --accent: #C5A880;
+        }
         html, body, [class*="css"], .stApp {
             font-family: 'Inter', sans-serif !important;
-            color: #1A1A1A !important;
+            color: var(--text) !important;
         }
-        h1, h2, h3, h4, h5, h6 {
+        h1, h2, h3, h4 {
             font-family: 'Playfair Display', serif !important;
             font-weight: 500 !important;
-            letter-spacing: 0.02em;
-            color: #1A1A1A !important;
+            color: var(--text) !important;
         }
-
-        /* 顏色變數 */
-        :root {
-            --color-primary: #C5A880;
-            --color-primary-hover: #B0926A;
-            --color-background: #FCFBFA;
-            --color-surface: #FFFFFF;
-            --color-border: #EBEBEB;
-            --color-text: #1A1A1A;
-            --color-text-muted: #6B7280;
-        }
-
-        .stApp {
-            background-color: var(--color-background) !important;
-        }
-
-        header[data-testid="stHeader"] {
-            background-color: transparent !important;
-        }
-
-        /* 卡片容器 */
+        .stApp { background: var(--bg) !important; }
+        .block-container { max-width: 1280px; padding-top: 1.4rem; }
         div[data-testid="stVerticalBlockBorderWrapper"] {
-            background-color: var(--color-surface) !important;
-            border: 1px solid var(--color-border) !important;
-            border-radius: 2px !important;
-            padding: 1.5rem !important;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.02) !important;
-            margin-bottom: 1.25rem !important;
-            transition: box-shadow 0.3s ease !important;
+            border-radius: 4px !important;
+            border-color: var(--border) !important;
+            background: var(--surface) !important;
         }
-        div[data-testid="stVerticalBlockBorderWrapper"]:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.04) !important;
-        }
-
-        /* 標籤頁 (Tabs) 樣式優化 */
-        div[data-testid="stTabBar"] {
-            background-color: transparent !important;
-            border-bottom: 1px solid var(--color-border) !important;
-            gap: 16px !important;
-            padding-bottom: 4px !important;
-            overflow-x: auto !important;
-            flex-wrap: nowrap !important;
-        }
-        button[data-testid="stTabBar-trigger"] {
-            font-family: 'Inter', sans-serif !important;
-            font-size: 0.82rem !important;
-            font-weight: 500 !important;
-            letter-spacing: 0.03em !important;
-            color: var(--color-text-muted) !important;
-            border: none !important;
-            background: none !important;
-            padding: 8px 4px !important;
-            white-space: nowrap !important;
-            transition: color 0.3s ease !important;
-        }
-        button[data-testid="stTabBar-trigger"]:hover {
-            color: var(--color-text) !important;
-        }
-        button[data-testid="stTabBar-trigger"][aria-selected="true"] {
-            color: var(--color-text) !important;
-            font-weight: 600 !important;
-            border-bottom: 2px solid var(--color-primary) !important;
-        }
-
-        /* 主要按鈕樣式 */
         button[data-testid="baseButton-primary"] {
-            background-color: #1A1A1A !important;
-            border: 1px solid #1A1A1A !important;
+            background: #1A1A1A !important;
+            border-color: #1A1A1A !important;
+            color: #fff !important;
             border-radius: 2px !important;
-            color: #FFFFFF !important;
-            font-family: 'Inter', sans-serif !important;
-            font-weight: 500 !important;
-            letter-spacing: 0.05em !important;
-            font-size: 0.85rem !important;
-            padding: 0.65rem 1.25rem !important;
-            min-height: 44px !important;
-            width: 100% !important;
-            transition: all 0.3s ease !important;
         }
         button[data-testid="baseButton-primary"]:hover {
-            background-color: var(--color-primary) !important;
-            border-color: var(--color-primary) !important;
+            background: var(--accent) !important;
+            border-color: var(--accent) !important;
         }
-
-        /* 次要按鈕樣式 */
-        button[data-testid="baseButton-secondary"] {
-            background-color: transparent !important;
-            border: 1px solid var(--color-border) !important;
-            border-radius: 2px !important;
-            color: var(--color-text) !important;
-            font-family: 'Inter', sans-serif !important;
-            font-weight: 500 !important;
-            letter-spacing: 0.05em !important;
-            font-size: 0.85rem !important;
-            padding: 0.65rem 1.25rem !important;
-            min-height: 44px !important;
-            width: 100% !important;
-            transition: all 0.3s ease !important;
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin: 14px 0 22px;
         }
-        button[data-testid="baseButton-secondary"]:hover {
-            border-color: #1A1A1A !important;
-        }
-
-        /* 輸入框優化 */
-        div[data-baseweb="select"] {
-            border-radius: 2px !important;
-        }
-        input, select, textarea {
-            border-radius: 2px !important;
-            font-size: 16px !important; /* 防止 iOS 自動縮放 */
-        }
-
-        /* KPI 指標卡片 */
         .metric-card {
-            background-color: var(--color-surface);
-            border: 1px solid var(--color-border);
-            border-radius: 2px;
-            padding: 1.25rem;
-            text-align: left;
-            transition: border-color 0.3s ease;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 4px;
+            padding: 16px;
         }
-        .metric-card:hover {
-            border-color: var(--color-primary);
+        .metric-label { color: var(--muted); font-size: 0.78rem; margin-bottom: 6px; }
+        .metric-value { font-family: 'Playfair Display', serif; font-size: 1.7rem; font-weight: 500; }
+        .platform-badge {
+            display: inline-flex; align-items: center;
+            border-radius: 999px; padding: 2px 10px;
+            color: #fff; font-size: 0.72rem; font-weight: 600;
+            text-transform: capitalize; margin-right: 8px;
         }
-        .metric-title {
-            font-family: 'Inter', sans-serif;
-            font-size: 0.78rem;
-            letter-spacing: 0.05em;
-            color: var(--color-text-muted);
-            margin-bottom: 0.5rem;
-            font-weight: 500;
-        }
-        .metric-value {
-            font-family: 'Playfair Display', serif;
-            font-size: 1.9rem;
-            font-weight: 400;
-            color: var(--color-text);
-            line-height: 1.1;
-        }
-
-        /* ── RWD：手機版 ── */
+        .muted { color: var(--muted); }
+        .thread-content { font-size: 1.05rem; line-height: 1.7; margin: 10px 0 12px; }
+        .content-title { font-size: 1rem; font-weight: 600; line-height: 1.4; margin: 8px 0; }
+        .content-link { color: var(--accent); text-decoration: none; font-weight: 600; }
         @media (max-width: 768px) {
-            div[data-testid="stVerticalBlockBorderWrapper"] {
-                padding: 1rem !important;
-            }
-            .metric-value {
-                font-size: 1.5rem;
-            }
-            /* 側邊欄收合時主內容滿版 */
-            .main .block-container {
-                padding-left: 1rem !important;
-                padding-right: 1rem !important;
-                max-width: 100% !important;
-            }
-            /* Dataframe 橫向捲動 */
-            div[data-testid="stDataFrameResizable"] {
-                overflow-x: auto !important;
-            }
+            .block-container { padding-left: 1rem; padding-right: 1rem; }
+            .metric-value { font-size: 1.4rem; }
         }
         </style>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-# ---------------------------------------------------------------------------
-# 排程器（用 cache_resource 確保整個 app 生命週期只建立一次）
-# ---------------------------------------------------------------------------
 @st.cache_resource
 def get_scheduler():
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -234,507 +338,501 @@ def load_keywords() -> pd.DataFrame:
         try:
             return pd.read_csv(KEYWORDS_CSV)
         except Exception:
-            pass
+            return pd.DataFrame({"keyword": [], "category": [], "note": []})
     return pd.DataFrame({"keyword": [], "category": [], "note": []})
 
 
-def automation_job(keywords: list[str], days: int):
-    """排程觸發時的完整流程：抓取 → 報告 → LINE。靜默執行，結果寫入 log。"""
-    import logging
-
-    log = logging.getLogger("automation")
+def number(value: Any) -> int:
+    if value is None or value == "":
+        return 0
     try:
-        log.info("自動化流程啟動：%s", keywords)
-        df = fetch_shorts(keywords, days=days)
-        if df.empty:
-            log.warning("自動化：未抓到資料，跳過。")
-            return
-        report = generate_report(df)
-        push_report(report)
-        log.info("自動化流程完成，已推播 LINE。")
-    except Exception as exc:  # 背景任務不可讓例外逸出
-        log.error("自動化流程失敗：%s", exc)
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def compact_number(value: Any) -> str:
+    value = number(value)
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return str(value)
+
+
+def as_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if isinstance(value, str) and value.startswith("["):
+        try:
+            import ast
+
+            parsed = ast.literal_eval(value)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item]
+        except Exception:
+            return []
+    return []
+
+
+def image_like(url: str) -> bool:
+    clean = url.lower().split("?")[0]
+    return clean.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
+
+
+def video_like(url: str) -> bool:
+    clean = url.lower().split("?")[0]
+    return clean.endswith((".mp4", ".mov", ".m3u8", ".webm"))
 
 
 # ---------------------------------------------------------------------------
-# 區塊 A：側邊欄
+# 側邊欄
 # ---------------------------------------------------------------------------
-def render_sidebar():
-    st.sidebar.markdown(
-        '<h2 style="font-family: \'Inter\', sans-serif; font-size: 1rem; letter-spacing: 0.05em; color: #1A1A1A; border-bottom: 1px solid #EBEBEB; padding-bottom: 8px; margin-bottom: 20px;">系統設定與狀態</h2>',
-        unsafe_allow_html=True
+def select_language() -> None:
+    options = {"中文": "zh", "English": "en"}
+    choice = st.sidebar.radio(
+        I18N["zh"]["lang_label"],
+        list(options.keys()),
+        index=0 if lang() == "zh" else 1,
+        horizontal=True,
+        key="lang_radio",
     )
+    st.session_state["lang"] = options[choice]
 
-    st.sidebar.markdown(
-        '<div style="font-family: \'Inter\', sans-serif; font-size: 0.8rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 12px;">API 金鑰整合</div>',
-        unsafe_allow_html=True
-    )
+
+def render_sidebar() -> None:
+    st.sidebar.divider()
+    st.sidebar.subheader(t("sb_env"))
+
+    st.sidebar.caption(t("sb_key_status"))
     keys = {
-        "YouTube API": "YOUTUBE_API_KEY",
+        "YouTube": "YOUTUBE_API_KEY",
+        "Apify": "APIFY_API_TOKEN",
         "OpenRouter": "OPENROUTER_API_KEY",
-        "LINE Token": "LINE_CHANNEL_ACCESS_TOKEN",
-        "LINE 推播對象": "LINE_USER_ID",
+        "LINE": "LINE_CHANNEL_ACCESS_TOKEN",
+        "Supabase": "SUPABASE_URL",
     }
-    
-    status_html = '<div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px;">'
-    for label, env in keys.items():
-        ok = bool(os.getenv(env))
-        color = "#1A1A1A" if ok else "#9CA3AF"
+    for label, env_key in keys.items():
+        ok = bool(os.getenv(env_key))
         icon = "●" if ok else "○"
-        status_text = "已啟用" if ok else "待設定"
-        status_html += f'<div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; font-family: \'Inter\', sans-serif;"><span style="color: #4B5563;">{label}</span><span style="color: {color}; font-size: 0.8rem;">{icon} {status_text}</span></div>'
-    status_html += '</div>'
-    st.sidebar.markdown(status_html, unsafe_allow_html=True)
-    st.sidebar.caption("請於專案根目錄 `.env` 更新金鑰並重啟系統。")
+        state = t("sb_configured") if ok else t("sb_missing")
+        st.sidebar.markdown(
+            f'<div style="display:flex;justify-content:space-between;font-size:0.85rem;">'
+            f'<span class="muted">{label}</span>'
+            f'<span style="color:{"#1A1A1A" if ok else "#9CA3AF"};">{icon} {state}</span></div>',
+            unsafe_allow_html=True,
+        )
 
-    st.sidebar.markdown(
-        '<div style="font-family: \'Inter\', sans-serif; font-size: 0.8rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 12px; margin-top: 10px;">自動化排程狀態</div>',
-        unsafe_allow_html=True
-    )
-    scheduler = get_scheduler()
-    jobs = scheduler.get_jobs()
+    st.sidebar.divider()
+    st.sidebar.subheader(t("sb_automation"))
+    jobs = get_scheduler().get_jobs()
     if jobs:
-        job = jobs[0]
-        nxt = job.next_run_time
-        nxt_str = nxt.strftime('%Y-%m-%d %H:%M') if nxt else 'N/A'
-        sched_html = f"""
-        <div style="border-left: 2px solid #C5A880; padding-left: 12px; margin-bottom: 24px;">
-            <div style="color: #1A1A1A; font-family: 'Inter', sans-serif; font-size: 0.85rem; font-weight: 500;">排程已啟用</div>
-            <div style="color: #6B7280; font-size: 0.8rem; margin-top: 4px;">下次執行：{nxt_str}</div>
-        </div>
-        """
-        st.sidebar.markdown(sched_html, unsafe_allow_html=True)
+        next_run = jobs[0].next_run_time
+        st.sidebar.caption(t("sb_next_run", time=next_run.strftime("%Y-%m-%d %H:%M") if next_run else "N/A"))
     else:
-        sched_html = """
-        <div style="border-left: 2px solid #EBEBEB; padding-left: 12px; margin-bottom: 24px;">
-            <div style="color: #9CA3AF; font-family: 'Inter', sans-serif; font-size: 0.85rem;">排程未啟用</div>
-        </div>
-        """
-        st.sidebar.markdown(sched_html, unsafe_allow_html=True)
-
-    st.sidebar.markdown(
-        f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.8rem; color: #6B7280;">模型：<span style="color: #1A1A1A;">{os.getenv("OPENROUTER_MODEL", "未設定")}</span></div>',
-        unsafe_allow_html=True
-    )
+        st.sidebar.caption(t("sb_no_job"))
+    st.sidebar.caption(f'{t("sb_model")}: {os.getenv("OPENROUTER_MODEL", "—")}')
 
 
 # ---------------------------------------------------------------------------
-# 輔助 UI 元件：指標卡片
+# 結果呈現
 # ---------------------------------------------------------------------------
-def render_metrics_cards(df: pd.DataFrame):
-    total_shorts = len(df)
-    total_views = df["view_count"].sum()
-    avg_views = int(df["view_count"].mean()) if total_shorts > 0 else 0
-    total_likes = df["like_count"].sum()
-    
-    def format_num(num):
-        if num >= 1_000_000:
-            return f"{num / 1_000_000:.1f}M"
-        elif num >= 1_000:
-            return f"{num / 1_000:.1f}K"
-        return str(num)
-        
-    metrics_html = f"""
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px;">
-        <div class="metric-card">
-            <div class="metric-title">採集影片總數</div>
-            <div class="metric-value">{total_shorts}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-title">總曝光觀看數</div>
-            <div class="metric-value" style="color: #C5A880;">{format_num(total_views)}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-title">平均觀看次數</div>
-            <div class="metric-value">{format_num(avg_views)}</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-title">互動數 (按讚)</div>
-            <div class="metric-value">{format_num(total_likes)}</div>
-        </div>
+def render_metrics(df: pd.DataFrame) -> None:
+    known_views = df["metrics_views"].dropna().sum() if "metrics_views" in df else 0
+    likes = df["metrics_likes"].sum() if "metrics_likes" in df else 0
+    html = f"""
+    <div class="metric-grid">
+        <div class="metric-card"><div class="metric-label">{t('m_items')}</div><div class="metric-value">{len(df)}</div></div>
+        <div class="metric-card"><div class="metric-label">{t('m_platforms')}</div><div class="metric-value">{df['platform'].nunique()}</div></div>
+        <div class="metric-card"><div class="metric-label">{t('m_views')}</div><div class="metric-value" style="color:var(--accent);">{compact_number(known_views)}</div></div>
+        <div class="metric-card"><div class="metric-label">{t('m_likes')}</div><div class="metric-value">{compact_number(likes)}</div></div>
     </div>
     """
-    st.markdown(metrics_html, unsafe_allow_html=True)
+    st.markdown(html, unsafe_allow_html=True)
 
 
-# ---------------------------------------------------------------------------
-# 區塊 B：關鍵字與數據抓取
-# ---------------------------------------------------------------------------
-def render_scraper_tab():
-    st.markdown(
-        '<h2 style="font-size: 1.8rem; color: #1A1A1A; margin-bottom: 24px;">市場情報採集</h2>',
-        unsafe_allow_html=True
-    )
+def render_content_card(row: pd.Series) -> None:
+    platform = str(row.get("platform", ""))
+    author = str(row.get("authorName") or row.get("author_name") or "Unknown")
+    title = row.get("title")
+    content = str(row.get("content") or "")
+    url = str(row.get("url") or "")
+    media_urls = as_list(row.get("mediaUrls")) or as_list(row.get("media_urls"))
+    views = row.get("metrics_views")
 
-    kw_df = load_keywords()
-    all_keywords = kw_df["keyword"].dropna().tolist() if not kw_df.empty else []
+    metrics = [
+        t("c_views", v=compact_number(views)) if pd.notna(views) else t("c_views_na"),
+        t("c_likes", v=compact_number(row.get("metrics_likes"))),
+        t("c_comments", v=compact_number(row.get("metrics_comments"))),
+    ]
+    reposts = row.get("metrics_reposts")
+    if pd.notna(reposts):
+        metrics.append(t("c_reposts", v=compact_number(reposts)))
 
+    color = PLATFORM_COLORS.get(platform, "#6B7280")
     with st.container(border=True):
         st.markdown(
-            '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 20px;">數據抓取設定</h3>',
-            unsafe_allow_html=True
+            f'<span class="platform-badge" style="background:{color};">{platform}</span>'
+            f'<span class="muted">{author} · {row.get("fetchedKeyword", "")}</span>',
+            unsafe_allow_html=True,
         )
-        col1, col2 = st.columns([2, 1])
-        with col1:
+
+        # Threads 採類 X 圖文排版（大字內文），其餘平台採標題優先。
+        if platform != "threads" and title:
+            st.markdown(f'<div class="content-title">{title}</div>', unsafe_allow_html=True)
+        if content:
+            css_class = "thread-content" if platform == "threads" else "muted"
+            st.markdown(f'<div class="{css_class}">{content}</div>', unsafe_allow_html=True)
+
+        if media_urls:
+            cols = st.columns(min(2, len(media_urls)))
+            for index, media_url in enumerate(media_urls[:4]):
+                with cols[index % len(cols)]:
+                    if image_like(media_url):
+                        st.image(media_url, width='stretch')
+                    elif video_like(media_url):
+                        st.video(media_url)
+
+        st.caption(" · ".join(metrics))
+        if url:
+            st.markdown(f'<a class="content-link" href="{url}" target="_blank">{t("c_open")}</a>', unsafe_allow_html=True)
+
+
+def render_results(df: pd.DataFrame) -> None:
+    with st.container(border=True):
+        st.markdown(f"#### {t('r_kpi')}")
+        render_metrics(df)
+
+        controls = st.columns([1, 1, 1])
+        with controls[0]:
+            platforms = sorted(df["platform"].dropna().unique().tolist())
+            selected_platforms = st.multiselect(t("r_filter_platform"), platforms, default=platforms)
+        with controls[1]:
+            sort_keys = ["views_or_likes", "likes", "comments", "publishedAt"]
+            sort_by = st.selectbox(t("r_sort"), sort_keys, format_func=lambda k: t(f"sort_{k}"))
+        with controls[2]:
+            max_cards = st.slider(t("r_cards"), 5, 100, 30)
+
+    filtered = df[df["platform"].isin(selected_platforms)].copy()
+    if filtered.empty:
+        return
+    filtered["views_or_likes"] = filtered["metrics_views"].fillna(filtered["metrics_likes"])
+    sort_column = {
+        "views_or_likes": "views_or_likes",
+        "likes": "metrics_likes",
+        "comments": "metrics_comments",
+        "publishedAt": "publishedAt",
+    }[sort_by]
+    filtered = filtered.sort_values(sort_column, ascending=False).head(max_cards)
+
+    chart_cols = st.columns(2)
+    with chart_cols[0]:
+        with st.container(border=True):
+            st.markdown(f"##### {t('r_chart_platform')}")
+            platform_agg = filtered.groupby("platform", as_index=False)["metrics_likes"].sum()
+            fig = px.bar(platform_agg, x="platform", y="metrics_likes",
+                         color="platform", color_discrete_map=PLATFORM_COLORS, text_auto=".2s")
+            fig.update_layout(template="plotly_white", paper_bgcolor="rgba(0,0,0,0)",
+                              plot_bgcolor="rgba(0,0,0,0)", showlegend=False,
+                              margin={"t": 20, "b": 30, "l": 30, "r": 10})
+            st.plotly_chart(fig, width='stretch')
+    with chart_cols[1]:
+        with st.container(border=True):
+            st.markdown(f"##### {t('r_chart_keyword')}")
+            keyword_agg = filtered.groupby("fetchedKeyword", as_index=False)["views_or_likes"].sum()
+            fig2 = px.bar(keyword_agg, x="fetchedKeyword", y="views_or_likes",
+                          text_auto=".2s", color_discrete_sequence=["#C5A880"])
+            fig2.update_layout(template="plotly_white", paper_bgcolor="rgba(0,0,0,0)",
+                               plot_bgcolor="rgba(0,0,0,0)",
+                               margin={"t": 20, "b": 30, "l": 30, "r": 10})
+            st.plotly_chart(fig2, width='stretch')
+
+    with st.expander(t("r_table")):
+        table_cols = [c for c in ["platform", "fetchedKeyword", "authorName", "title",
+                                  "metrics_views", "metrics_likes", "metrics_comments", "url"]
+                      if c in filtered.columns]
+        st.dataframe(
+            filtered[table_cols],
+            width='stretch',
+            column_config={"url": st.column_config.LinkColumn("URL")},
+        )
+
+    for _, row in filtered.iterrows():
+        render_content_card(row)
+
+
+# ---------------------------------------------------------------------------
+# 分頁：情報採集
+# ---------------------------------------------------------------------------
+def render_scraper_tab() -> None:
+    st.markdown(f"## {t('sc_header')}")
+    kw_df = load_keywords()
+    keyword_options = kw_df["keyword"].dropna().tolist() if not kw_df.empty else []
+
+    with st.container(border=True):
+        st.markdown(f"##### {t('sc_settings')}")
+        cols = st.columns([2, 1, 1])
+        with cols[0]:
             selected = st.multiselect(
-                "監控關鍵字（讀自 keywords.csv）",
-                options=all_keywords,
-                default=all_keywords[: min(4, len(all_keywords))],
+                t("sc_keywords"),
+                options=keyword_options,
+                default=keyword_options[: min(4, len(keyword_options))],
+                key="sc_keywords",
             )
-            extra = st.text_input("額外自訂關鍵字（請以逗號分隔）", "")
+            extra = st.text_input(t("sc_extra"), key="sc_extra")
             if extra.strip():
-                selected = selected + [k.strip() for k in extra.split(",") if k.strip()]
-        with col2:
-            days = st.slider("數據回溯天數", min_value=1, max_value=90, value=14)
-            max_sec = st.slider("影片時長上限（秒）", 15, 120, 120)
+                selected += [item.strip() for item in extra.split(",") if item.strip()]
+        with cols[1]:
+            platforms = st.multiselect(
+                t("sc_platforms"),
+                options=list(SUPPORTED_PLATFORMS),
+                default=["youtube", "threads"],
+                format_func=str.capitalize,
+                key="sc_platforms",
+            )
+            days = st.slider(t("sc_days"), 1, 90, 14, key="sc_days")
+        with cols[2]:
+            max_seconds = st.slider(t("sc_max_sec"), 15, 180, 120, key="sc_max_sec")
+            result_limit = st.slider(t("sc_limit"), 5, 100, 50, key="sc_limit")
 
-        st.write("")
-        if st.button("開始掃描抓取", type="primary", disabled=not selected):
-            progress = st.progress(0.0, text="初始化中...")
+        if st.button(t("sc_fetch"), type="primary", disabled=not selected or not platforms):
+            progress = st.progress(0.0, text=t("sc_fetching"))
 
-            def cb(done, total, keyword):
-                progress.progress(done / total, text=f"正在掃描：{keyword} ({done}/{total})")
+            def progress_callback(done: int, total: int, label: str) -> None:
+                progress.progress(min(done / max(total, 1), 1.0), text=t("sc_fetching_one", label=label))
 
             try:
-                df = fetch_shorts(selected, days=days, max_seconds=max_sec,
-                                  progress_callback=cb)
-            except YouTubeServiceError as e:
+                df, errors = fetch_content_dataframe(
+                    selected,
+                    platforms=platforms,
+                    days=days,
+                    max_seconds=max_seconds,
+                    result_limit=result_limit,
+                    progress_callback=progress_callback,
+                )
+            except DataRouterError as exc:
                 progress.empty()
-                st.error(f"數據抓取失敗：{e}")
+                st.error(str(exc))
                 return
             progress.empty()
             st.session_state["df_results"] = df
-            if df.empty:
-                st.warning("未找到符合目前條件的數據。")
-            else:
-                st.success(f"數據抓取完成！共取得 {len(df)} 筆紀錄。")
-                import uuid as _uuid
-                run_id = str(_uuid.uuid4())
-                st.session_state["run_id"] = run_id
-                db_service.upsert_shorts(df, run_id)
+            st.session_state["fetch_errors"] = errors
+            st.session_state["run_id"] = str(uuid.uuid4())
+
+            if not df.empty:
+                st.success(t("sc_done", n=len(df)))
+                db_service.upsert_shorts(df, st.session_state["run_id"])
 
     if not kw_df.empty:
-        st.write("")
-        with st.expander("檢視關鍵字分類表 (keywords.csv)"):
-            st.dataframe(kw_df, use_container_width=True)
+        with st.expander(t("sc_kw_table")):
+            st.dataframe(kw_df, width='stretch')
 
-    # 顯示結果
+    errors = st.session_state.get("fetch_errors", {})
+    for platform, message in errors.items():
+        st.warning(t("sc_fail", platform=platform, message=message))
+
     df = st.session_state.get("df_results")
-    if df is not None and not df.empty:
-        st.write("")
-        with st.container(border=True):
-            st.markdown(
-                '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 20px;">關鍵效能指標</h3>',
-                unsafe_allow_html=True
-            )
-            # 渲染 KPI 數字小卡
-            render_metrics_cards(df)
-
-            st.dataframe(
-                df[["keyword", "title", "view_count", "like_count",
-                    "duration_sec", "published_at", "url"]],
-                use_container_width=True,
-                column_config={"url": st.column_config.LinkColumn("連結")},
-            )
-
-        st.write("")
-        # 圖表展示區
-        plotly_layout_updates = {
-            "template": "plotly_white",
-            "paper_bgcolor": "rgba(0,0,0,0)",
-            "plot_bgcolor": "rgba(0,0,0,0)",
-            "font": {"family": "Inter, sans-serif", "color": "#1A1A1A"},
-            "margin": {"t": 40, "b": 30, "l": 40, "r": 20},
-        }
-
-        c1, c2 = st.columns(2)
-        with c1:
-            with st.container(border=True):
-                st.markdown(
-                    '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; font-weight: 500; letter-spacing: 0.05em; color: #1A1A1A; margin-bottom: 20px;">各關鍵字曝光聲量</h3>',
-                    unsafe_allow_html=True
-                )
-                agg = (df.groupby("keyword")["view_count"].sum()
-                       .sort_values(ascending=False).reset_index())
-                fig = px.bar(
-                    agg, 
-                    x="keyword", 
-                    y="view_count",
-                    text_auto=".2s",
-                    color_discrete_sequence=["#C5A880"]
-                )
-                fig.update_layout(**plotly_layout_updates)
-                fig.update_traces(
-                    marker_line_width=0,
-                    textposition="outside",
-                    textfont_color="#1A1A1A"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                
-        with c2:
-            with st.container(border=True):
-                st.markdown(
-                    '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; font-weight: 500; letter-spacing: 0.05em; color: #1A1A1A; margin-bottom: 20px;">前 10 熱門內容分佈</h3>',
-                    unsafe_allow_html=True
-                )
-                top = df.nlargest(10, "view_count").copy()
-                top["short_title"] = top["title"].apply(lambda x: str(x) if len(str(x)) <= 30 else str(x)[:27] + "...")
-                
-                fig2 = px.pie(
-                    top, 
-                    names="short_title", 
-                    values="view_count",
-                    hole=0.45,
-                    color_discrete_sequence=["#C5A880", "#D4AF37", "#E0A96D", "#8D99AE", "#2B2D42", "#A3B18A", "#D4A373", "#CCD5AE", "#E9EDC9", "#FAEDCD"],
-                    custom_data=["title"]
-                )
-                fig2.update_layout(**plotly_layout_updates)
-                fig2.update_layout(showlegend=False)
-                fig2.update_traces(
-                    textposition="inside", 
-                    textinfo="percent",
-                    hovertemplate="<b>%{customdata[0]}</b><br><br>觀看數: %{value:,}<br>佔比: %{percent}<extra></extra>"
-                )
-                st.plotly_chart(fig2, use_container_width=True)
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        render_results(df)
+    else:
+        st.info(t("sc_empty"))
 
 
 # ---------------------------------------------------------------------------
-# 區塊 C：AI 報告與 LINE
+# 分頁：AI 報告
 # ---------------------------------------------------------------------------
-def render_report_tab():
-    st.markdown(
-        '<h2 style="font-size: 1.8rem; color: #1A1A1A; margin-bottom: 24px;">AI 深度洞察與推播</h2>',
-        unsafe_allow_html=True
-    )
-
+def render_report_tab() -> None:
+    st.markdown(f"## {t('rp_header')}")
     df = st.session_state.get("df_results")
-    if df is None or df.empty:
-        st.info("請先在「市場情報採集」分頁中完成數據抓取。")
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        st.info(t("rp_need_data"))
         return
 
     with st.container(border=True):
-        st.markdown(
-            '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 20px;">分析報告設定</h3>',
-            unsafe_allow_html=True
-        )
-        st.write(f"將以 **{len(df)}** 支短影音樣本進行分析。")
-        extra = st.text_input("分析指令（例如：聚焦特定品牌、調整報告語氣）", "")
-        
-        st.write("")
-        if st.button("生成情報分析報告", type="primary"):
+        st.write(t("rp_sample", n=len(df)))
+        extra = st.text_input(t("rp_instruction"))
+        if st.button(t("rp_generate"), type="primary"):
             placeholder = st.empty()
-            acc = ""
+            report = ""
             try:
                 for delta in stream_report(df, extra_instruction=extra or None):
-                    acc += delta
-                    placeholder.markdown(acc)
-            except LLMAgentError as e:
-                st.error(f"報告生成失敗：{e}")
+                    report += delta
+                    placeholder.markdown(report)
+            except LLMAgentError as exc:
+                st.error(str(exc))
                 return
-            st.session_state["report"] = acc
-            run_id = st.session_state.get("run_id", "manual")
-            model = os.getenv("OPENROUTER_MODEL", "unknown")
-            keywords = df["keyword"].unique().tolist() if "keyword" in df.columns else []
-            db_service.save_report(run_id, keywords, model, acc)
+            st.session_state["report"] = report
+            db_service.save_report(
+                st.session_state.get("run_id", "manual"),
+                df["fetchedKeyword"].dropna().unique().tolist(),
+                os.getenv("OPENROUTER_MODEL", "unknown"),
+                report,
+            )
 
     report = st.session_state.get("report")
     if report:
-        st.write("")
         with st.container(border=True):
-            st.markdown(
-                '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 20px;">市場情報報告</h3>',
-                unsafe_allow_html=True
-            )
+            st.markdown(f"##### {t('rp_report_title')}")
             st.markdown(report)
-            
-            st.write("")
-            with st.expander("檢視 Markdown 原始碼"):
+            with st.expander(t("rp_md_src")):
                 st.code(report, language="markdown")
-            
-            st.write("")
-            if st.button("透過 LINE 發送推播", type="secondary"):
-                with st.spinner("正在發送推播..."):
-                    try:
-                        n = push_report(report)
-                        st.success(f"已成功發送至 {n} 個 LINE 群組。")
-                    except LineServiceError as e:
-                        st.error(f"推播發送失敗：{e}")
+            if st.button(t("rp_send_line")):
+                try:
+                    sent = push_report(report)
+                    st.success(t("rp_sent", n=sent))
+                except LineServiceError as exc:
+                    st.error(str(exc))
 
 
 # ---------------------------------------------------------------------------
-# 區塊 D：自動化排程
+# 自動化排程
 # ---------------------------------------------------------------------------
-def render_automation_tab():
-    st.markdown(
-        '<h2 style="font-size: 1.8rem; color: #1A1A1A; margin-bottom: 24px;">背景自動化排程</h2>',
-        unsafe_allow_html=True
+def automation_job(keywords: list[str], platforms: list[str], days: int,
+                   max_seconds: int, result_limit: int) -> None:
+    df, errors = fetch_content_dataframe(
+        keywords,
+        platforms=platforms,
+        days=days,
+        max_seconds=max_seconds,
+        result_limit=result_limit,
     )
+    if df.empty:
+        raise RuntimeError(f"No content fetched. Errors: {errors}")
+    report, run_id = generate_report(df)
+    db_service.upsert_shorts(df, run_id)
+    db_service.save_report(
+        run_id,
+        df["fetchedKeyword"].dropna().unique().tolist(),
+        os.getenv("OPENROUTER_MODEL", "unknown"),
+        report,
+    )
+    push_report(report)
 
+
+def render_automation_tab() -> None:
+    st.markdown(f"## {t('au_header')}")
     scheduler = get_scheduler()
     kw_df = load_keywords()
-    all_keywords = kw_df["keyword"].dropna().tolist() if not kw_df.empty else []
+    keyword_options = kw_df["keyword"].dropna().tolist() if not kw_df.empty else []
+    weekday_labels = WEEKDAY_LABELS[lang()]
 
     with st.container(border=True):
-        st.markdown(
-            '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 16px;">自動化工作流設定</h3>',
-            unsafe_allow_html=True
-        )
-        st.markdown("<p style='color: #6B7280; font-size: 0.9em; margin-bottom: 24px;'>背景自動執行：數據抓取 → AI 報告生成 → LINE 自動推播。</p>", unsafe_allow_html=True)
-        
-        auto_keywords = st.multiselect("目標監控關鍵字", options=all_keywords,
-                                       default=all_keywords[: min(4, len(all_keywords))])
+        st.caption(t("au_desc"))
+        keywords = st.multiselect(t("au_keywords"), keyword_options,
+                                  default=keyword_options[: min(4, len(keyword_options))],
+                                  key="au_keywords")
+        platforms = st.multiselect(t("au_platforms"), list(SUPPORTED_PLATFORMS),
+                                   default=["youtube", "threads"], format_func=str.capitalize,
+                                   key="au_platforms")
         c1, c2, c3 = st.columns(3)
         with c1:
-            weekday = st.selectbox("每週執行日", WEEKDAYS, index=0)
+            weekday_idx = st.selectbox(t("au_weekday"), range(7),
+                                       format_func=lambda i: weekday_labels[i], key="au_weekday")
         with c2:
-            hour = st.number_input("時 (24h)", 0, 23, 9)
+            hour = st.number_input(t("au_hour"), 0, 23, 9, key="au_hour")
         with c3:
-            minute = st.number_input("分", 0, 59, 0)
-        days = st.slider("數據回溯天數", 1, 90, 7)
+            minute = st.number_input(t("au_minute"), 0, 59, 0, key="au_minute")
+        days = st.slider(t("sc_days"), 1, 90, 7, key="au_days")
+        max_seconds = st.slider(t("sc_max_sec"), 15, 180, 120, key="auto_max_seconds")
+        result_limit = st.slider(t("sc_limit"), 5, 100, 50, key="auto_result_limit")
 
-        jobs = scheduler.get_jobs()
-        enabled = bool(jobs)
-
-        st.write("")
         col_a, col_b = st.columns(2)
         with col_a:
-            if st.button("啟用自動化排程", type="primary", disabled=not auto_keywords):
+            if st.button(t("au_enable"), type="primary", disabled=not keywords or not platforms):
                 scheduler.remove_all_jobs()
                 scheduler.add_job(
                     automation_job,
                     trigger="cron",
-                    day_of_week=WEEKDAYS.index(weekday),  # 0=Mon
+                    day_of_week=int(weekday_idx),
                     hour=int(hour),
                     minute=int(minute),
-                    args=[auto_keywords, days],
+                    args=[keywords, platforms, days, max_seconds, result_limit],
                     id="weekly_report",
                     replace_existing=True,
                 )
-                st.success(f"已設定排程：每{weekday} {int(hour):02d}:{int(minute):02d} 自動執行。")
+                st.success(t("au_scheduled", weekday=weekday_labels[weekday_idx],
+                             time=f"{int(hour):02d}:{int(minute):02d}"))
                 st.rerun()
         with col_b:
-            if st.button("停用自動化排程", type="secondary", disabled=not enabled):
+            if st.button(t("au_disable"), disabled=not scheduler.get_jobs()):
                 scheduler.remove_all_jobs()
-                st.info("自動化排程已停用。")
+                st.info(t("au_disabled"))
                 st.rerun()
 
-    st.write("")
-    
     with st.container(border=True):
-        st.markdown(
-            '<h3 style="font-family: \'Inter\', sans-serif; font-size: 0.95rem; letter-spacing: 0.05em; color: #6B7280; margin-bottom: 16px;">手動強制執行</h3>',
-            unsafe_allow_html=True
-        )
-        st.markdown("<p style='color: #6B7280; font-size: 0.9em; margin-bottom: 24px;'>立即於背景執行一次完整的自動化工作流。</p>", unsafe_allow_html=True)
-        if st.button("立即執行", type="secondary"):
-            with st.spinner("正在執行自動化流程..."):
-                automation_job(auto_keywords, days)
-            st.success("手動執行測試完畢。")
+        st.markdown(f"##### {t('au_run_now_title')}")
+        st.caption(t("au_run_now_desc"))
+        if st.button(t("au_run_now")):
+            with st.spinner(t("au_run_now")):
+                automation_job(keywords, platforms, days, max_seconds, result_limit)
+            st.success(t("au_run_done"))
 
 
 # ---------------------------------------------------------------------------
-# 區塊 E：歷史知識庫
+# 歷史知識庫
 # ---------------------------------------------------------------------------
-def render_history_tab():
-    st.markdown(
-        '<h2 style="font-size: 1.8rem; font-weight: 700; margin-bottom: 20px;">📚 歷史知識庫</h2>',
-        unsafe_allow_html=True
-    )
-
+def render_history_tab() -> None:
+    st.markdown(f"## {t('h_header')}")
     if not db_service.is_configured():
-        st.warning("尚未設定 Supabase（SUPABASE_URL / SUPABASE_KEY），歷史功能不可用。")
+        st.warning(t("h_not_configured"))
         return
 
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        history_days = st.slider("查詢近幾天", 1, 90, 30)
-
+    days = st.slider(t("h_days"), 1, 90, 30)
     with st.container(border=True):
-        st.markdown(
-            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #1A1A1A;">關鍵字觀看趨勢</h3>',
-            unsafe_allow_html=True
-        )
-        hist_df = db_service.get_history(days=history_days)
+        st.markdown(f"##### {t('h_trend')}")
+        hist_df = db_service.get_history(days=days)
         if hist_df.empty:
-            st.info("目前尚無歷史資料，請先執行抓取。")
+            st.info(t("h_no_data"))
         else:
-            agg = (
-                hist_df.groupby(["fetched_at", "keyword"])["view_count"]
-                .sum()
-                .reset_index()
-            )
-            agg["fetched_at"] = agg["fetched_at"].dt.date
-            agg = agg.groupby(["fetched_at", "keyword"])["view_count"].sum().reset_index()
-            fig = px.line(
-                agg, x="fetched_at", y="view_count", color="keyword",
-                labels={"fetched_at": "日期", "view_count": "總觀看數", "keyword": "關鍵字"},
-                color_discrete_sequence=["#C5A880", "#2563EB", "#8B5CF6", "#10B981", "#F59E0B"],
-                markers=True,
-            )
-            fig.update_traces(marker_size=8, line_width=2)
-            fig.update_layout(
-                template="plotly_white",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font={"family": "Inter, sans-serif", "color": "#1A1A1A", "size": 13},
-                margin={"t": 20, "b": 30, "l": 40, "r": 20},
-                xaxis={"gridcolor": "#EBEBEB", "linecolor": "#EBEBEB", "tickcolor": "#6B7280"},
-                yaxis={"gridcolor": "#EBEBEB", "linecolor": "#EBEBEB", "tickcolor": "#6B7280"},
-                legend={"font": {"color": "#1A1A1A"}},
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"共 {len(hist_df)} 筆歷史紀錄（{agg['fetched_at'].nunique()} 個日期）")
+            agg = hist_df.copy()
+            agg["fetched_at"] = pd.to_datetime(agg["fetched_at"]).dt.date
+            agg = agg.groupby(["fetched_at", "keyword"], as_index=False)["view_count"].sum()
+            fig = px.line(agg, x="fetched_at", y="view_count", color="keyword", markers=True)
+            fig.update_layout(template="plotly_white", paper_bgcolor="rgba(0,0,0,0)",
+                              plot_bgcolor="rgba(0,0,0,0)",
+                              margin={"t": 20, "b": 30, "l": 40, "r": 20})
+            st.plotly_chart(fig, width='stretch')
 
-    st.write("")
+    reports = db_service.get_reports(limit=20)
     with st.container(border=True):
-        st.markdown(
-            '<h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 15px; color: #1A1A1A;">歷史報告</h3>',
-            unsafe_allow_html=True
-        )
-        reports = db_service.get_reports(limit=20)
+        st.markdown(f"##### {t('h_reports')}")
         if not reports:
-            st.info("尚無報告記錄。")
+            st.info(t("h_no_reports"))
         else:
-            for r in reports:
-                ts = r.get("generated_at", "")[:16].replace("T", " ")
-                kw = r.get("keywords", "")
-                label = f"{ts}　{kw}"
+            for report in reports:
+                label = f"{str(report.get('generated_at', ''))[:16].replace('T', ' ')}　{report.get('keywords', '')}"
                 with st.expander(label):
-                    st.markdown(r.get("content", ""))
+                    st.markdown(report.get("content", ""))
 
 
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def main():
-    # 注入 Custom CSS
+def main() -> None:
     inject_custom_css()
-    
-    # 頂部 Hero Banner (Clinical Elegance)
-    hero_html = """
-    <div style="border-bottom: 1px solid #EBEBEB; padding-bottom: 24px; margin-bottom: 32px; margin-top: 12px;">
-        <h1 style="margin: 0; font-size: clamp(1.8rem, 5vw, 3rem); font-weight: 500; font-family: 'Playfair Display', serif; color: #1A1A1A; line-height: 1.1;">
-            醫美情報與 AI 分析
-        </h1>
-        <p style="margin: 12px 0 0 0; color: #6B7280; font-family: 'Inter', sans-serif; font-size: clamp(0.85rem, 2.5vw, 1rem); font-weight: 400; max-width: 600px; line-height: 1.6;">
-            專為醫美產業打造的精準市場情報與 AI 分析系統。追蹤 YouTube Shorts 趨勢，並無縫推送洞察報告。
-        </p>
-    </div>
-    """
-    st.markdown(hero_html, unsafe_allow_html=True)
-    
+    select_language()
+
+    st.markdown(
+        f"""
+        <div style="border-bottom:1px solid #EBEBEB;padding-bottom:20px;margin-bottom:24px;">
+            <h1 style="margin:0;font-size:clamp(1.7rem,4vw,2.6rem);">{t('app_title')}</h1>
+            <p class="muted" style="margin:10px 0 0;font-size:clamp(0.85rem,2vw,1rem);max-width:640px;line-height:1.6;">{t('app_subtitle')}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(t("app_caption", time=datetime.now().strftime("%Y-%m-%d %H:%M")))
+
     render_sidebar()
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["市場情報採集", "AI 深度洞察", "自動化排程", "歷史知識庫"]
-    )
-    with tab1:
+    tabs = st.tabs([t("tab_search"), t("tab_report"), t("tab_auto"), t("tab_history")])
+    with tabs[0]:
         render_scraper_tab()
-    with tab2:
+    with tabs[1]:
         render_report_tab()
-    with tab3:
+    with tabs[2]:
         render_automation_tab()
-    with tab4:
+    with tabs[3]:
         render_history_tab()
 
 

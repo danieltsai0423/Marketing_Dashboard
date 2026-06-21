@@ -6,6 +6,8 @@ plotly>=5.18
 # YouTube Data API v3
 google-api-python-client>=2.100
 
+# Apify actors are called through the standard library HTTP client.
+
 # LLM Agent via OpenRouter (OpenAI-compatible SDK)
 openai>=1.0
 
